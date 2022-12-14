@@ -511,6 +511,14 @@ pub enum Mechanism {
     X255,
     /// Used to serialize the output of a diffie-hellman
     SharedSecret,
+    //TODO: Do we want to distinguish PKCS_v1.5 vs PSS/OAEP right here?
+    Rsa2048,
+    Rsa2048Pkcs,
+    Rsa2048Pss,
+    Rsa3072Pkcs,
+    Rsa3072Pss,
+    Rsa4096Pkcs,
+    Rsa4096Pss,
 }
 
 pub type LongData = Bytes<MAX_LONG_DATA_LENGTH>;
@@ -518,6 +526,7 @@ pub type MediumData = Bytes<MAX_MEDIUM_DATA_LENGTH>;
 pub type ShortData = Bytes<MAX_SHORT_DATA_LENGTH>;
 
 pub type Message = Bytes<MAX_MESSAGE_LENGTH>;
+pub type SerializedKey = Bytes<MAX_KEY_MATERIAL_LENGTH>;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
 pub enum KeySerialization {
@@ -527,6 +536,15 @@ pub enum KeySerialization {
     EcdhEsHkdf256,
     Raw,
     Sec1,
+    /// RSA OpenPGP private key import format
+    ///
+    /// Corresponds to [RsaCrtImportFormat](RsaCrtImportFormat)
+    RsaCrt,
+    /// RSA Public key modulus
+    RsaN,
+    /// RSA Public key exponent
+    RsaE,
+    Pkcs8Der,
 }
 
 pub type Signature = Bytes<MAX_SIGNATURE_LENGTH>;
@@ -540,3 +558,17 @@ pub enum SignatureSerialization {
 }
 
 pub type UserAttribute = Bytes<MAX_USER_ATTRIBUTE_LENGTH>;
+
+/// Data format for RSA Private key serialization in [KeySerialization::Raw](crate::types::KeySerialization::Raw)
+/// format in [unsafe_inject_key](crate::client::CryptoClient::unsafe_inject_key)
+///
+/// Serialized using [postcard_serialize_bytes](crate::postcard_serialize_bytes). All data are big endian large integers
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RsaCrtImportFormat<'d> {
+    pub e: &'d [u8],
+    pub p: &'d [u8],
+    pub q: &'d [u8],
+    pub qinv: &'d [u8],
+    pub dp: &'d [u8],
+    pub dq: &'d [u8],
+}

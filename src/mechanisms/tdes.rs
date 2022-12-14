@@ -6,7 +6,7 @@
 // use cortex_m_semihosting::{dbg, hprintln};
 
 // needed to even get ::new() from des...
-use des::cipher::{BlockDecrypt, BlockEncrypt, NewBlockCipher};
+use des::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
 
 use crate::api::*;
 use crate::error::Error;
@@ -72,7 +72,7 @@ impl Decrypt for super::Tdes {
 
         let key_id = request.key;
 
-        let symmetric_key: [u8; 24] = keystore
+        let symmetric_key: [u8; TDES_KEY_SIZE] = keystore
             .load_key(key::Secrecy::Secret, None, &key_id)?
             .material
             .as_slice()
@@ -87,5 +87,25 @@ impl Decrypt for super::Tdes {
         Ok(reply::Decrypt {
             plaintext: Some(message),
         })
+    }
+}
+
+impl UnsafeInjectKey for super::Tdes {
+    fn unsafe_inject_key(
+        keystore: &mut impl Keystore,
+        request: &request::UnsafeInjectKey,
+    ) -> Result<reply::UnsafeInjectKey, Error> {
+        if request.raw_key.len() != TDES_KEY_SIZE {
+            return Err(Error::InvalidSerializedKey);
+        }
+
+        let key_id = keystore.store_key(
+            request.attributes.persistence,
+            key::Secrecy::Secret,
+            key::Kind::Symmetric(request.raw_key.len()),
+            &request.raw_key,
+        )?;
+
+        Ok(reply::UnsafeInjectKey { key: key_id })
     }
 }

@@ -1,7 +1,7 @@
-use chacha20::ChaCha8Rng;
 use heapless_bytes::Unsigned;
 use interchange::Responder;
 use littlefs2::path::PathBuf;
+use rand_chacha::ChaCha8Rng;
 pub use rand_core::{RngCore, SeedableRng};
 
 use crate::api::*;
@@ -155,6 +155,8 @@ impl<P: Platform> ServiceResources<P> {
                     Mechanism::Aes256Cbc => mechanisms::Aes256Cbc::decrypt(keystore, request),
                     Mechanism::Chacha8Poly1305 => mechanisms::Chacha8Poly1305::decrypt(keystore, request),
                     Mechanism::Tdes => mechanisms::Tdes::decrypt(keystore, request),
+                    Mechanism::Rsa2048Pkcs => mechanisms::Rsa2048Pkcs::decrypt(keystore, request),
+                    Mechanism::Rsa4096Pkcs => mechanisms::Rsa4096Pkcs::decrypt(keystore, request),
                     _ => Err(Error::MechanismNotAvailable),
 
                 }.map(Reply::Decrypt)
@@ -171,6 +173,8 @@ impl<P: Platform> ServiceResources<P> {
                     Mechanism::P256 => mechanisms::P256::derive_key(keystore, request),
                     Mechanism::Sha256 => mechanisms::Sha256::derive_key(keystore, request),
                     Mechanism::X255 => mechanisms::X255::derive_key(keystore, request),
+                    Mechanism::Rsa2048Pkcs => mechanisms::Rsa2048Pkcs::derive_key(keystore, request),
+                    Mechanism::Rsa4096Pkcs => mechanisms::Rsa4096Pkcs::derive_key(keystore, request),
                     _ => Err(Error::MechanismNotAvailable),
 
                 }.map(Reply::DeriveKey)
@@ -182,6 +186,8 @@ impl<P: Platform> ServiceResources<P> {
                     Mechanism::Ed255 => mechanisms::Ed255::deserialize_key(keystore, request),
                     Mechanism::P256 => mechanisms::P256::deserialize_key(keystore, request),
                     Mechanism::X255 => mechanisms::X255::deserialize_key(keystore, request),
+                    Mechanism::Rsa2048Pkcs => mechanisms::Rsa2048Pkcs::deserialize_key(keystore, request),
+                    Mechanism::Rsa4096Pkcs => mechanisms::Rsa4096Pkcs::deserialize_key(keystore, request),
                     _ => Err(Error::MechanismNotAvailable),
 
                 }.map(Reply::DeserializeKey)
@@ -215,6 +221,8 @@ impl<P: Platform> ServiceResources<P> {
                     Mechanism::P256 => mechanisms::P256::exists(keystore, request),
                     Mechanism::Totp => mechanisms::Totp::exists(keystore, request),
                     Mechanism::X255 => mechanisms::X255::exists(keystore, request),
+                    Mechanism::Rsa2048Pkcs => mechanisms::Rsa2048Pkcs::exists(keystore, request),
+                    Mechanism::Rsa4096Pkcs => mechanisms::Rsa4096Pkcs::exists(keystore, request),
                     _ => Err(Error::MechanismNotAvailable),
 
                 }.map(Reply::Exists)
@@ -226,6 +234,8 @@ impl<P: Platform> ServiceResources<P> {
                     Mechanism::Ed255 => mechanisms::Ed255::generate_key(keystore, request),
                     Mechanism::P256 => mechanisms::P256::generate_key(keystore, request),
                     Mechanism::X255 => mechanisms::X255::generate_key(keystore, request),
+                    Mechanism::Rsa2048Pkcs => mechanisms::Rsa2048Pkcs::generate_key(keystore, request),
+                    Mechanism::Rsa4096Pkcs => mechanisms::Rsa4096Pkcs::generate_key(keystore, request),
                     _ => Err(Error::MechanismNotAvailable),
                 }.map(Reply::GenerateKey)
             },
@@ -252,6 +262,9 @@ impl<P: Platform> ServiceResources<P> {
                     Mechanism::Ed255 => mechanisms::Ed255::unsafe_inject_key(keystore,request),
                     Mechanism::SharedSecret => mechanisms::SharedSecret::unsafe_inject_key(keystore, request),
                     Mechanism::Aes256Cbc => mechanisms::Aes256Cbc::unsafe_inject_key(keystore, request),
+                    Mechanism::Tdes => mechanisms::Tdes::unsafe_inject_key(keystore, request),
+                    Mechanism::Rsa2048Pkcs => mechanisms::Rsa2048Pkcs::unsafe_inject_key(keystore, request),
+                    Mechanism::Rsa4096Pkcs => mechanisms::Rsa4096Pkcs::unsafe_inject_key(keystore, request),
                     _ => Err(Error::MechanismNotAvailable)
                 }.map(Reply::UnsafeInjectKey)
             },
@@ -437,6 +450,8 @@ impl<P: Platform> ServiceResources<P> {
                     Mechanism::P256 => mechanisms::P256::serialize_key(keystore, request),
                     Mechanism::X255 => mechanisms::X255::serialize_key(keystore, request),
                     Mechanism::SharedSecret => mechanisms::SharedSecret::serialize_key(keystore, request),
+                    Mechanism::Rsa2048Pkcs => mechanisms::Rsa2048Pkcs::serialize_key(keystore, request),
+                    Mechanism::Rsa4096Pkcs => mechanisms::Rsa4096Pkcs::serialize_key(keystore, request),
                     _ => Err(Error::MechanismNotAvailable),
 
                 }.map(Reply::SerializeKey)
@@ -453,6 +468,8 @@ impl<P: Platform> ServiceResources<P> {
                     Mechanism::P256 => mechanisms::P256::sign(keystore, request),
                     Mechanism::P256Prehashed => mechanisms::P256Prehashed::sign(keystore, request),
                     Mechanism::Totp => mechanisms::Totp::sign(keystore, request),
+                    Mechanism::Rsa2048Pkcs => mechanisms::Rsa2048Pkcs::sign(keystore, request),
+                    Mechanism::Rsa4096Pkcs => mechanisms::Rsa4096Pkcs::sign(keystore, request),
                     _ => Err(Error::MechanismNotAvailable),
 
                 }.map(Reply::Sign)
@@ -477,6 +494,8 @@ impl<P: Platform> ServiceResources<P> {
 
                     Mechanism::Ed255 => mechanisms::Ed255::verify(keystore, request),
                     Mechanism::P256 => mechanisms::P256::verify(keystore, request),
+                    Mechanism::Rsa2048Pkcs => mechanisms::Rsa2048Pkcs::verify(keystore, request),
+                    Mechanism::Rsa4096Pkcs => mechanisms::Rsa4096Pkcs::verify(keystore, request),
                     _ => Err(Error::MechanismNotAvailable),
 
                 }.map(Reply::Verify)
@@ -634,7 +653,7 @@ impl<P: Platform> ServiceResources<P> {
                 }
 
                 // 3. Initialize ChaCha8 construction with our seed.
-                let mut rng = chacha20::ChaCha8Rng::from_seed(our_seed);
+                let mut rng = ChaCha8Rng::from_seed(our_seed);
 
                 // 4. Store freshly drawn seed for next boot.
                 let mut seed_to_store = [0u8; 32];

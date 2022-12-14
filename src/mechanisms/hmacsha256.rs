@@ -10,13 +10,15 @@ impl DeriveKey for super::HmacSha256 {
         keystore: &mut impl Keystore,
         request: &request::DeriveKey,
     ) -> Result<reply::DeriveKey, Error> {
-        use hmac::{Hmac, Mac, NewMac};
+        use hmac::{Hmac, Mac};
         type HmacSha256 = Hmac<sha2::Sha256>;
 
         let key_id = request.base_key;
         let key = keystore.load_key(key::Secrecy::Secret, None, &key_id)?;
         if !matches!(key.kind, key::Kind::Symmetric(..) | key::Kind::Shared(..)) {
-            return Err(Error::WrongKeyKind);
+            // We have to disable this check for compatibility with fido-authenticator, see:
+            // https://github.com/solokeys/fido-authenticator/issues/21
+            warn!("derive_key for hmacsha256 called with invalid key kind ({:?})", key.kind);
         }
         let shared_secret = key.material;
 
@@ -46,7 +48,7 @@ impl DeriveKey for super::HmacSha256 {
 impl Sign for super::HmacSha256 {
     #[inline(never)]
     fn sign(keystore: &mut impl Keystore, request: &request::Sign) -> Result<reply::Sign, Error> {
-        use hmac::{Hmac, Mac, NewMac};
+        use hmac::{Hmac, Mac};
         use sha2::Sha256;
         type HmacSha256 = Hmac<Sha256>;
 
