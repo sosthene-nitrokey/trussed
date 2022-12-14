@@ -30,7 +30,7 @@ fn aes256cbc() {
             .encrypt_padded_mut::<ZeroPadding>(&mut buffer, 64)
             .unwrap();
         assert_ne!(buffer, [48; 64]);
-        assert_eq!(buffer.as_slice(), *ciphertext);
+        assert_eq!(buffer.as_slice(), ciphertext.as_slice());
 
         let plaintext =
             syscall!(client.decrypt(Mechanism::Aes256Cbc, key, &ciphertext, &[], &[], &[]))
