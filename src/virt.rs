@@ -12,21 +12,13 @@ use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng as _;
 
 use crate::{
-    client::mechanisms::{Ed255 as _, P256 as _},
-    pipe::TrussedInterchange,
-    platform,
-    service::Service,
-    syscall,
-    types::Location,
-    ClientImplementation, Interchange as _,
+    pipe::TrussedInterchange, platform, service::Service, ClientImplementation, Interchange as _,
 };
 
 pub use store::{Filesystem, Ram, StoreProvider};
 pub use ui::UserInterface;
 
 pub type Client<S> = ClientImplementation<Service<Platform<S>>>;
-
-const CLIENT_ID_ATTN: &str = "attn";
 
 // We need this mutex to make sure that:
 // - TrussedInterchange is not used concurrently
@@ -39,11 +31,15 @@ where
     F: FnOnce(Platform<S>) -> R,
 {
     let _guard = MUTEX.lock().unwrap_or_else(|err| err.into_inner());
+    unsafe {
+        TrussedInterchange::reset_claims();
+        store.reset();
+    }
     // causing a regression again
     // let rng = chacha20::ChaCha8Rng::from_rng(rand_core::OsRng).unwrap();
     let platform = Platform {
         rng: ChaCha8Rng::from_seed([42u8; 32]),
-        store,
+        _store: store,
         ui: UserInterface::new(),
     };
     f(platform)
@@ -74,7 +70,7 @@ where
 
 pub struct Platform<S: StoreProvider> {
     rng: ChaCha8Rng,
-    store: S,
+    _store: S,
     ui: UserInterface,
 }
 
@@ -84,35 +80,9 @@ impl<S: StoreProvider> Platform<S> {
         client_id: &str,
         test: impl FnOnce(ClientImplementation<Service<Self>>) -> R,
     ) -> R {
-        let service = Service::from(self);
+        let service = Service::new(self);
         let client = service.try_into_new_client(client_id).unwrap();
         test(client)
-    }
-}
-
-impl<S: StoreProvider> From<Platform<S>> for Service<Platform<S>> {
-    fn from(platform: Platform<S>) -> Self {
-        // reset platform
-        unsafe {
-            TrussedInterchange::reset_claims();
-        }
-        unsafe {
-            platform.store.reset();
-        }
-
-        let mut service = Service::new(platform);
-
-        // preparations for attestation
-        let mut attn_client = service.try_as_new_client(CLIENT_ID_ATTN).unwrap();
-        syscall!(attn_client.generate_ed255_private_key(Location::Internal));
-        syscall!(attn_client.generate_p256_private_key(Location::Internal));
-
-        // destroy this attestation client
-        unsafe {
-            TrussedInterchange::reset_claims();
-        }
-
-        service
     }
 }
 
@@ -130,6 +100,6 @@ unsafe impl<S: StoreProvider> platform::Platform for Platform<S> {
     }
 
     fn store(&self) -> Self::S {
-        unsafe { self.store.store() }
+        unsafe { S::store() }
     }
 }

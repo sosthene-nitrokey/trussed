@@ -6,7 +6,7 @@ use std::{
 };
 
 use generic_array::typenum::{U16, U512};
-use littlefs2::{const_ram_storage, driver::Storage};
+use littlefs2::{const_ram_storage, driver::Storage, fs::Allocation};
 
 use crate::{
     store,
@@ -17,12 +17,26 @@ use crate::{
 pub trait StoreProvider {
     type Store: Store;
 
-    unsafe fn store(&self) -> Self::Store;
+    unsafe fn ifs() -> &'static mut <Self::Store as Store>::I;
+
+    unsafe fn store() -> Self::Store;
 
     unsafe fn reset(&self);
 }
 
-const STORAGE_SIZE: usize = 1024 * 16;
+const STORAGE_SIZE: usize = 512 * 128;
+
+static mut INTERNAL_RAM_STORAGE: Option<InternalStorage> = None;
+static mut INTERNAL_RAM_FS_ALLOC: Option<Allocation<InternalStorage>> = None;
+
+static mut INTERNAL_FILESYSTEM_STORAGE: Option<FilesystemStorage> = None;
+static mut INTERNAL_FILESYSTEM_FS_ALLOC: Option<Allocation<FilesystemStorage>> = None;
+
+static mut EXTERNAL_STORAGE: Option<ExternalStorage> = None;
+static mut EXTERNAL_FS_ALLOC: Option<Allocation<ExternalStorage>> = None;
+
+static mut VOLATILE_STORAGE: Option<VolatileStorage> = None;
+static mut VOLATILE_FS_ALLOC: Option<Allocation<VolatileStorage>> = None;
 
 const_ram_storage!(InternalStorage, STORAGE_SIZE);
 const_ram_storage!(ExternalStorage, STORAGE_SIZE);
@@ -48,14 +62,19 @@ impl Storage for FilesystemStorage {
     // type ATTRBYTES_MAX = U1022;
 
     fn read(&mut self, offset: usize, buffer: &mut [u8]) -> LfsResult<usize> {
+        debug!("read: offset: {}, len: {}", offset, buffer.len());
         let mut file = File::open(&self.0).unwrap();
         file.seek(SeekFrom::Start(offset as _)).unwrap();
         let bytes_read = file.read(buffer).unwrap();
-        assert_eq!(bytes_read, buffer.len());
+        assert!(bytes_read <= buffer.len());
         Ok(bytes_read as _)
     }
 
     fn write(&mut self, offset: usize, data: &[u8]) -> LfsResult<usize> {
+        debug!("write: offset: {}, len: {}", offset, data.len());
+        if offset + data.len() > STORAGE_SIZE {
+            return Err(littlefs2::io::Error::NoSpace);
+        }
         let mut file = OpenOptions::new().write(true).open(&self.0).unwrap();
         file.seek(SeekFrom::Start(offset as _)).unwrap();
         let bytes_written = file.write(data).unwrap();
@@ -65,6 +84,10 @@ impl Storage for FilesystemStorage {
     }
 
     fn erase(&mut self, offset: usize, len: usize) -> LfsResult<usize> {
+        debug!("erase: offset: {}, len: {}", offset, len);
+        if offset + len > STORAGE_SIZE {
+            return Err(littlefs2::io::Error::NoSpace);
+        }
         let mut file = OpenOptions::new().write(true).open(&self.0).unwrap();
         file.seek(SeekFrom::Start(offset as _)).unwrap();
         let zero_block = [0xFFu8; Self::BLOCK_SIZE];
@@ -115,26 +138,31 @@ impl Filesystem {
 impl StoreProvider for Filesystem {
     type Store = FilesystemStore;
 
-    unsafe fn store(&self) -> Self::Store {
+    unsafe fn ifs() -> &'static mut FilesystemStorage {
+        INTERNAL_FILESYSTEM_STORAGE
+            .as_mut()
+            .expect("ifs not initialized")
+    }
+
+    unsafe fn store() -> Self::Store {
         Self::Store { __: PhantomData }
     }
 
     unsafe fn reset(&self) {
-        let ifs = FilesystemStorage(self.internal.clone());
-        let efs = ExternalStorage::default();
-        let vfs = VolatileStorage::default();
-        let (ifs_alloc, ifs_storage, efs_alloc, efs_storage, vfs_alloc, vfs_storage) =
-            Self::Store::allocate(ifs, efs, vfs);
-        let format = self.format;
-        self.store()
+        INTERNAL_FILESYSTEM_STORAGE.replace(FilesystemStorage(self.internal.clone()));
+        INTERNAL_FILESYSTEM_FS_ALLOC.replace(littlefs2::fs::Filesystem::allocate());
+        reset_external();
+        reset_volatile();
+
+        Self::store()
             .mount(
-                ifs_alloc,
-                ifs_storage,
-                efs_alloc,
-                efs_storage,
-                vfs_alloc,
-                vfs_storage,
-                format,
+                INTERNAL_FILESYSTEM_FS_ALLOC.as_mut().unwrap(),
+                INTERNAL_FILESYSTEM_STORAGE.as_mut().unwrap(),
+                EXTERNAL_FS_ALLOC.as_mut().unwrap(),
+                EXTERNAL_STORAGE.as_mut().unwrap(),
+                VOLATILE_FS_ALLOC.as_mut().unwrap(),
+                VOLATILE_STORAGE.as_mut().unwrap(),
+                self.format,
             )
             .expect("failed to mount filesystem");
     }
@@ -153,26 +181,40 @@ pub struct Ram {}
 impl StoreProvider for Ram {
     type Store = RamStore;
 
-    unsafe fn store(&self) -> Self::Store {
+    unsafe fn ifs() -> &'static mut InternalStorage {
+        INTERNAL_RAM_STORAGE.as_mut().expect("ifs not initialized")
+    }
+
+    unsafe fn store() -> Self::Store {
         Self::Store { __: PhantomData }
     }
 
     unsafe fn reset(&self) {
-        let ifs = InternalStorage::default();
-        let efs = ExternalStorage::default();
-        let vfs = VolatileStorage::default();
-        let (ifs_alloc, ifs_storage, efs_alloc, efs_storage, vfs_alloc, vfs_storage) =
-            Self::Store::allocate(ifs, efs, vfs);
-        self.store()
+        INTERNAL_RAM_STORAGE.replace(InternalStorage::new());
+        INTERNAL_RAM_FS_ALLOC.replace(littlefs2::fs::Filesystem::allocate());
+        reset_external();
+        reset_volatile();
+
+        Self::store()
             .mount(
-                ifs_alloc,
-                ifs_storage,
-                efs_alloc,
-                efs_storage,
-                vfs_alloc,
-                vfs_storage,
+                INTERNAL_RAM_FS_ALLOC.as_mut().unwrap(),
+                INTERNAL_RAM_STORAGE.as_mut().unwrap(),
+                EXTERNAL_FS_ALLOC.as_mut().unwrap(),
+                EXTERNAL_STORAGE.as_mut().unwrap(),
+                VOLATILE_FS_ALLOC.as_mut().unwrap(),
+                VOLATILE_STORAGE.as_mut().unwrap(),
                 true,
             )
             .expect("failed to mount filesystem");
     }
+}
+
+unsafe fn reset_external() {
+    EXTERNAL_STORAGE.replace(ExternalStorage::new());
+    EXTERNAL_FS_ALLOC.replace(littlefs2::fs::Filesystem::allocate());
+}
+
+unsafe fn reset_volatile() {
+    VOLATILE_STORAGE.replace(VolatileStorage::new());
+    VOLATILE_FS_ALLOC.replace(littlefs2::fs::Filesystem::allocate());
 }
