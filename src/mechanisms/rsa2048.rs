@@ -225,7 +225,10 @@ mod implementation {
             use rsa::padding::PaddingScheme;
             let native_signature = priv_key
                 .sign(PaddingScheme::new_pkcs1v15_sign(None), &request.message)
-                .unwrap();
+                .map_err(|_err| {
+                    error!("Failed to sign: {:?}", _err);
+                    Error::SignDataTooLarge
+                })?;
             let our_signature = Signature::from_slice(&native_signature).unwrap();
 
             // std::println!("Rsa2048-PKCS_v1.5 signature:");
