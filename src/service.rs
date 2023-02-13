@@ -5,8 +5,10 @@ use rand_chacha::ChaCha8Rng;
 pub use rand_core::{RngCore, SeedableRng};
 
 use crate::api::*;
+use crate::backend::{BackendId, CoreOnly, Dispatch};
+use crate::client::{ClientBuilder, ClientImplementation};
 use crate::config::*;
-use crate::error::Error;
+use crate::error::{Error, Result};
 pub use crate::key;
 use crate::mechanisms;
 pub use crate::pipe::ServiceEndpoint;
@@ -30,7 +32,7 @@ macro_rules! rpc_trait { ($($Name:ident, $name:ident,)*) => { $(
 
     pub trait $Name {
         fn $name(_keystore: &mut impl Keystore, _request: &request::$Name)
-        -> Result<reply::$Name, Error> { Err(Error::MechanismNotAvailable) }
+        -> Result<reply::$Name> { Err(Error::MechanismNotAvailable) }
     }
 )* } }
 
@@ -56,12 +58,7 @@ pub struct ServiceResources<P>
 where
     P: Platform,
 {
-    pub(crate) platform: P,
-    // // Option?
-    // currently_serving: ClientId,
-    // TODO: how/when to clear
-    read_dir_files_state: Option<ReadDirFilesState>,
-    read_dir_state: Option<ReadDirState>,
+    platform: P,
     rng_state: Option<ChaCha8Rng>,
 }
 
@@ -69,60 +66,83 @@ impl<P: Platform> ServiceResources<P> {
     pub fn new(platform: P) -> Self {
         Self {
             platform,
-            // currently_serving: PathBuf::new(),
-            read_dir_files_state: None,
-            read_dir_state: None,
             rng_state: None,
         }
     }
+
+    pub fn platform(&self) -> &P {
+        &self.platform
+    }
+
+    pub fn platform_mut(&mut self) -> &mut P {
+        &mut self.platform
+    }
 }
 
-pub struct Service<P>
+pub struct Service<P, D = CoreOnly>
 where
     P: Platform,
+    D: Dispatch,
 {
-    eps: Vec<ServiceEndpoint, { MAX_SERVICE_CLIENTS::USIZE }>,
+    eps: Vec<ServiceEndpoint<D::BackendId, D::Context>, { MAX_SERVICE_CLIENTS::USIZE }>,
     resources: ServiceResources<P>,
+    dispatch: D,
 }
 
 // need to be able to send crypto service to an interrupt handler
-unsafe impl<P: Platform> Send for Service<P> {}
+unsafe impl<P: Platform, D: Dispatch> Send for Service<P, D> {}
 
 impl<P: Platform> ServiceResources<P> {
+    pub fn certstore(&mut self, ctx: &CoreContext) -> Result<ClientCertstore<P::S>> {
+        self.rng()
+            .map(|rng| ClientCertstore::new(ctx.path.clone(), rng, self.platform.store()))
+            .map_err(|_| Error::EntropyMalfunction)
+    }
+
+    pub fn counterstore(&mut self, ctx: &CoreContext) -> Result<ClientCounterstore<P::S>> {
+        self.rng()
+            .map(|rng| ClientCounterstore::new(ctx.path.clone(), rng, self.platform.store()))
+            .map_err(|_| Error::EntropyMalfunction)
+    }
+
+    pub fn filestore(&mut self, ctx: &CoreContext) -> ClientFilestore<P::S> {
+        ClientFilestore::new(ctx.path.clone(), self.platform.store())
+    }
+
+    pub fn trussed_filestore(&mut self) -> ClientFilestore<P::S> {
+        ClientFilestore::new(PathBuf::from("trussed"), self.platform.store())
+    }
+
+    pub fn keystore(&mut self, ctx: &CoreContext) -> Result<ClientKeystore<P::S>> {
+        self.rng()
+            .map(|rng| ClientKeystore::new(ctx.path.clone(), rng, self.platform.store()))
+            .map_err(|_| Error::EntropyMalfunction)
+    }
+
+    pub fn dispatch<D: Dispatch>(
+        &mut self,
+        dispatch: &mut D,
+        backend: &BackendId<D::BackendId>,
+        ctx: &mut Context<D::Context>,
+        request: &Request,
+    ) -> Result<Reply, Error> {
+        match backend {
+            BackendId::Core => self.reply_to(&mut ctx.core, request),
+            BackendId::Custom(backend) => dispatch.request(backend, ctx, request, self),
+        }
+    }
+
     #[inline(never)]
-    pub fn reply_to(&mut self, client_id: PathBuf, request: &Request) -> Result<Reply, Error> {
+    pub fn reply_to(&mut self, ctx: &mut CoreContext, request: &Request) -> Result<Reply> {
         // TODO: what we want to do here is map an enum to a generic type
         // Is there a nicer way to do this?
 
         let full_store = self.platform.store();
 
-        // prepare keystore, bound to client_id, for cryptographic calls
-        let mut keystore: ClientKeystore<P::S> = ClientKeystore::new(
-            client_id.clone(),
-            self.rng().map_err(|_| Error::EntropyMalfunction)?,
-            full_store,
-        );
-        let keystore = &mut keystore;
-
-        // prepare certstore, bound to client_id, for cert calls
-        let mut certstore: ClientCertstore<P::S> = ClientCertstore::new(
-            client_id.clone(),
-            self.rng().map_err(|_| Error::EntropyMalfunction)?,
-            full_store,
-        );
-        let certstore = &mut certstore;
-
-        // prepare counterstore, bound to client_id, for counter calls
-        let mut counterstore: ClientCounterstore<P::S> = ClientCounterstore::new(
-            client_id.clone(),
-            self.rng().map_err(|_| Error::EntropyMalfunction)?,
-            full_store,
-        );
-        let counterstore = &mut counterstore;
-
-        // prepare filestore, bound to client_id, for storage calls
-        let mut filestore: ClientFilestore<P::S> = ClientFilestore::new(client_id, full_store);
-        let filestore = &mut filestore;
+        let keystore = &mut self.keystore(ctx)?;
+        let certstore = &mut self.certstore(ctx)?;
+        let counterstore = &mut self.counterstore(ctx)?;
+        let filestore = &mut self.filestore(ctx);
 
         debug_now!("TRUSSED {:?}", request);
         match request {
@@ -335,11 +355,11 @@ impl<P: Platform> ServiceResources<P> {
             Request::ReadDirFirst(request) => {
                 let maybe_entry = match filestore.read_dir_first(&request.dir, request.location, request.not_before_filename.as_ref())? {
                     Some((entry, read_dir_state)) => {
-                        self.read_dir_state = Some(read_dir_state);
+                        ctx.read_dir_state = Some(read_dir_state);
                         Some(entry)
                     }
                     None => {
-                        self.read_dir_state = None;
+                        ctx.read_dir_state = None;
                         None
 
                     }
@@ -349,18 +369,18 @@ impl<P: Platform> ServiceResources<P> {
 
             Request::ReadDirNext(_request) => {
                 // ensure next call has nothing to work with, unless we store state again
-                let read_dir_state = self.read_dir_state.take();
+                let read_dir_state = ctx.read_dir_state.take();
 
                 let maybe_entry = match read_dir_state {
                     None => None,
                     Some(state) => {
                         match filestore.read_dir_next(state)? {
                             Some((entry, read_dir_state)) => {
-                                self.read_dir_state = Some(read_dir_state);
+                                ctx.read_dir_state = Some(read_dir_state);
                                 Some(entry)
                             }
                             None => {
-                                self.read_dir_state = None;
+                                ctx.read_dir_state = None;
                                 None
                             }
                         }
@@ -373,11 +393,11 @@ impl<P: Platform> ServiceResources<P> {
             Request::ReadDirFilesFirst(request) => {
                 let maybe_data = match filestore.read_dir_files_first(&request.dir, request.location, request.user_attribute.clone())? {
                     Some((data, state)) => {
-                        self.read_dir_files_state = Some(state);
+                        ctx.read_dir_files_state = Some(state);
                         data
                     }
                     None => {
-                        self.read_dir_files_state = None;
+                        ctx.read_dir_files_state = None;
                         None
                     }
                 };
@@ -385,18 +405,18 @@ impl<P: Platform> ServiceResources<P> {
             }
 
             Request::ReadDirFilesNext(_request) => {
-                let read_dir_files_state = self.read_dir_files_state.take();
+                let read_dir_files_state = ctx.read_dir_files_state.take();
 
                 let maybe_data = match read_dir_files_state {
                     None => None,
                     Some(state) => {
                         match filestore.read_dir_files_next(state)? {
                             Some((data, state)) => {
-                                self.read_dir_files_state = Some(state);
+                                ctx.read_dir_files_state = Some(state);
                                 data
                             }
                             None => {
-                                self.read_dir_files_state = None;
+                                ctx.read_dir_files_state = None;
                                 None
                             }
                         }
@@ -593,6 +613,10 @@ impl<P: Platform> ServiceResources<P> {
                     .map(|id| Reply::WriteCertificate(reply::WriteCertificate { id } ))
             }
 
+            Request::SerdeExtension(_) => {
+                Err(Error::RequestNotAvailable)
+            }
+
             // _ => {
             //     // #[cfg(test)]
             //     // println!("todo: {:?} request!", &request);
@@ -608,8 +632,7 @@ impl<P: Platform> ServiceResources<P> {
         let mut rng = match self.rng_state.take() {
             Some(rng) => rng,
             None => {
-                let mut filestore: ClientFilestore<P::S> =
-                    ClientFilestore::new(PathBuf::from("trussed"), self.platform.store());
+                let mut filestore = self.trussed_filestore();
 
                 let path = PathBuf::from("rng-state.bin");
 
@@ -681,82 +704,80 @@ impl<P: Platform> ServiceResources<P> {
 
 impl<P: Platform> Service<P> {
     pub fn new(platform: P) -> Self {
+        Self::with_dispatch(platform, Default::default())
+    }
+}
+
+impl<P: Platform, D: Dispatch> Service<P, D> {
+    pub fn with_dispatch(platform: P, dispatch: D) -> Self {
         let resources = ServiceResources::new(platform);
         Self {
             eps: Vec::new(),
             resources,
+            dispatch,
         }
     }
+}
 
+impl<P: Platform> Service<P> {
     /// Add a new client, claiming one of the statically configured
     /// interchange pairs.
-    #[allow(clippy::result_unit_err)]
-    pub fn try_new_client<S: crate::platform::Syscall>(
+    pub fn try_new_client<S: Syscall>(
         &mut self,
         client_id: &str,
         syscall: S,
-    ) -> Result<crate::client::ClientImplementation<S>, ()> {
-        use interchange::Interchange;
-        let (requester, responder) = TrussedInterchange::claim().ok_or(())?;
-        let client_id = ClientId::from(client_id.as_bytes());
-        self.add_endpoint(responder, client_id)
-            .map_err(|_service_endpoint| ())?;
-
-        Ok(crate::client::ClientImplementation::new(requester, syscall))
+    ) -> Result<ClientImplementation<S>, Error> {
+        ClientBuilder::new(client_id)
+            .prepare(self)
+            .map(|p| p.build(syscall))
     }
 
     /// Specialization of `try_new_client`, using `self`'s implementation of `Syscall`
     /// (directly call self for processing). This method is only useful for single-threaded
     /// single-app runners.
-    #[allow(clippy::result_unit_err)]
     pub fn try_as_new_client(
         &mut self,
         client_id: &str,
-    ) -> Result<crate::client::ClientImplementation<&mut Service<P>>, ()> {
-        use interchange::Interchange;
-        let (requester, responder) = TrussedInterchange::claim().ok_or(())?;
-        let client_id = ClientId::from(client_id.as_bytes());
-        self.add_endpoint(responder, client_id)
-            .map_err(|_service_endpoint| ())?;
-
-        Ok(crate::client::ClientImplementation::new(requester, self))
+    ) -> Result<ClientImplementation<&mut Self>, Error> {
+        ClientBuilder::new(client_id)
+            .prepare(self)
+            .map(|p| p.build(self))
     }
 
     /// Similar to [try_as_new_client][Service::try_as_new_client] except that the returning client owns the
     /// Service and is therefore `'static`
-    #[allow(clippy::result_unit_err)]
     pub fn try_into_new_client(
         mut self,
         client_id: &str,
-    ) -> Result<crate::client::ClientImplementation<Service<P>>, ()> {
-        use interchange::Interchange;
-        let (requester, responder) = TrussedInterchange::claim().ok_or(())?;
-        let client_id = ClientId::from(client_id.as_bytes());
-        self.add_endpoint(responder, client_id)
-            .map_err(|_service_endpoint| ())?;
-
-        Ok(crate::client::ClientImplementation::new(requester, self))
+    ) -> Result<ClientImplementation<Self>, Error> {
+        ClientBuilder::new(client_id)
+            .prepare(&mut self)
+            .map(|p| p.build(self))
     }
+}
 
+impl<P: Platform, D: Dispatch> Service<P, D> {
     pub fn add_endpoint(
         &mut self,
         interchange: Responder<TrussedInterchange>,
-        client_id: ClientId,
-    ) -> Result<(), ServiceEndpoint> {
-        if client_id == PathBuf::from("trussed") {
+        core_ctx: impl Into<CoreContext>,
+        backends: &'static [BackendId<D::BackendId>],
+    ) -> Result<(), Error> {
+        let core_ctx = core_ctx.into();
+        if core_ctx.path == PathBuf::from("trussed") {
             panic!("trussed is a reserved client ID");
         }
-        self.eps.push(ServiceEndpoint {
-            interchange,
-            client_id,
-        })
+        self.eps
+            .push(ServiceEndpoint {
+                interchange,
+                ctx: core_ctx.into(),
+                backends,
+            })
+            .map_err(|_| Error::ClientCountExceeded)
     }
 
     pub fn set_seed_if_uninitialized(&mut self, seed: &[u8; 32]) {
-        let mut filestore: ClientFilestore<P::S> =
-            ClientFilestore::new(PathBuf::from("trussed"), self.resources.platform.store());
-        let filestore = &mut filestore;
-
+        let mut filestore = self.resources.trussed_filestore();
         let path = PathBuf::from("rng-state.bin");
         if !filestore.exists(&path, Location::Internal) {
             filestore
@@ -791,7 +812,19 @@ impl<P: Platform> Service<P> {
                 // #[cfg(test)] println!("service got request: {:?}", &request);
 
                 // resources.currently_serving = ep.client_id.clone();
-                let reply_result = resources.reply_to(ep.client_id.clone(), &request);
+                let reply_result = if ep.backends.is_empty() {
+                    resources.reply_to(&mut ep.ctx.core, &request)
+                } else {
+                    let mut reply_result = Err(Error::RequestNotAvailable);
+                    for backend in ep.backends {
+                        reply_result =
+                            resources.dispatch(&mut self.dispatch, backend, &mut ep.ctx, &request);
+                        if reply_result != Err(Error::RequestNotAvailable) {
+                            break;
+                        }
+                    }
+                    reply_result
+                };
 
                 resources
                     .platform
@@ -824,18 +857,20 @@ impl<P: Platform> Service<P> {
     }
 }
 
-impl<P> crate::client::Syscall for &mut Service<P>
+impl<P, D> crate::client::Syscall for &mut Service<P, D>
 where
     P: Platform,
+    D: Dispatch,
 {
     fn syscall(&mut self) {
         self.process();
     }
 }
 
-impl<P> crate::client::Syscall for Service<P>
+impl<P, D> crate::client::Syscall for Service<P, D>
 where
     P: Platform,
+    D: Dispatch,
 {
     fn syscall(&mut self) {
         self.process();

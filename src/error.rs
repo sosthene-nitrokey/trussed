@@ -3,7 +3,7 @@
 // use crate::api::Reply;
 // use crate::client::RawClient;
 
-pub type Result<T> = core::result::Result<T, Error>;
+pub type Result<T, E = Error> = core::result::Result<T, E>;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 #[repr(u32)]
@@ -23,18 +23,23 @@ pub enum Error {
     // our errors
     AeadError,
     CborError,
+    ClientCountExceeded,
     EntropyMalfunction,
     FilesystemReadFailure,
     FilesystemWriteFailure,
     ImplementationError,
     InternalError,
+    InvalidPath,
     InvalidSerializedKey,
+    InvalidSerializedReply,
+    InvalidSerializedRequest,
     InvalidSerializationFormat,
     MechanismNotAvailable,
     NonceOverflow,
     NoSuchCertificate,
     NoSuchKey,
     NotJustLetters,
+    ReplySerializationFailure,
     RequestNotAvailable,
     SignDataTooLarge,
     WrongKeyKind,

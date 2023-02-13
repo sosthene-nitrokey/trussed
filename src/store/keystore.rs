@@ -2,7 +2,7 @@ use littlefs2::path::PathBuf;
 use rand_chacha::ChaCha8Rng;
 
 use crate::{
-    config::MAX_SERIALIZED_KEY_LENGTH,
+    config::MAX_KEY_MATERIAL_LENGTH,
     error::{Error, Result},
     key,
     store::{self, Store},
@@ -173,7 +173,7 @@ impl<S: Store> Keystore for ClientKeystore<S> {
 
         let location = self.location(secrecy, id).ok_or(Error::NoSuchKey)?;
 
-        let bytes: Bytes<MAX_SERIALIZED_KEY_LENGTH> = store::read(self.store, location, &path)?;
+        let bytes: Bytes<{ MAX_KEY_MATERIAL_LENGTH }> = store::read(self.store, location, &path)?;
 
         let key = key::Key::try_deserialize(&bytes)?;
 

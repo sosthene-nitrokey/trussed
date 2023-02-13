@@ -63,11 +63,12 @@ pub enum Kind {
     Symmetric(usize),
     /// 32B symmetric key + nonce, the parameter is the length of the nonce in bytes
     Symmetric32Nonce(usize),
+    Rsa2048,
+    Rsa3072,
+    Rsa4096,
     Ed255,
     P256,
     X255,
-    Rsa2048,
-    Rsa4096,
 }
 
 bitflags::bitflags! {
@@ -152,9 +153,9 @@ impl Kind {
             Kind::Ed255 => 4,
             Kind::P256 => 5,
             Kind::X255 => 6,
-            Kind::Rsa2048 => 0x7,
-            //Kind::Rsa3072 => 0xE0,
-            Kind::Rsa4096 => 0x8,
+            Kind::Rsa2048 => 7,
+            Kind::Rsa3072 => 8,
+            Kind::Rsa4096 => 9,
         }
     }
 
@@ -166,10 +167,9 @@ impl Kind {
             4 => Self::Ed255,
             5 => Self::P256,
             6 => Self::X255,
-
-            0x7 => Self::Rsa2048,
-            //0xE0 => Kind::Rsa3072,
-            0x8 => Kind::Rsa4096,
+            7 => Kind::Rsa2048,
+            8 => Kind::Rsa3072,
+            9 => Kind::Rsa4096,
             _ => return Err(Error::InvalidSerializedKey),
         })
     }

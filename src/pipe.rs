@@ -1,9 +1,13 @@
 #![allow(clippy::transmute_ptr_to_ptr)]
+// Ignore lint caused by interchange! macro
+#![allow(clippy::derive_partial_eq_without_eq)]
+
 use interchange::Responder;
 
 use crate::api::{Reply, Request};
+use crate::backend::BackendId;
 use crate::error::Error;
-use crate::types::ClientId;
+use crate::types::Context;
 
 cfg_if::cfg_if! {
 
@@ -68,11 +72,12 @@ cfg_if::cfg_if! {
 // https://xenomai.org/documentation/xenomai-2.4/html/api/group__native__queue.html
 // https://doc.micrium.com/display/osiiidoc/Using+Message+Queues
 
-pub struct ServiceEndpoint {
+pub struct ServiceEndpoint<I: 'static, C> {
     pub interchange: Responder<TrussedInterchange>,
     // service (trusted) has this, not client (untrusted)
     // used among other things to namespace cryptographic material
-    pub client_id: ClientId,
+    pub ctx: Context<C>,
+    pub backends: &'static [BackendId<I>],
 }
 
 // pub type ClientEndpoint = Requester<TrussedInterchange>;

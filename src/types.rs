@@ -19,9 +19,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::*;
 use crate::key::Secrecy;
+use crate::store::filestore::{ReadDirFilesState, ReadDirState};
 
 pub use crate::client::FutureResult;
 pub use crate::platform::Platform;
+
+/// An empty struct not storing any data.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct NoData;
 
 /// The ID of a Trussed object.
 ///
@@ -232,8 +237,56 @@ pub mod consent {
 // pub type AeadNonce = [u8; 12];
 // pub type AeadTag = [u8; 16];
 
-// pub type ClientId = heapless::Vec<u8, heapless::consts::U32>;
-pub type ClientId = PathBuf;
+/// The context for a syscall (per client).
+///
+/// The context stores the state used by the standard syscall implementations, see
+/// [`CoreContext`][].  Additionally, backends can define a custom context for their syscall
+/// implementations.
+pub struct Context<B> {
+    pub core: CoreContext,
+    pub backends: B,
+}
+
+impl<B: Default> From<CoreContext> for Context<B> {
+    fn from(core: CoreContext) -> Self {
+        Self {
+            core,
+            backends: B::default(),
+        }
+    }
+}
+
+// The "CoreContext" struct is the closest equivalent to a PCB that Trussed
+// currently has. Trussed currently uses it to choose the client-specific
+// subtree in the filesystem (see docs in src/store.rs) and to maintain
+// the walker state of the directory traversal syscalls.
+pub struct CoreContext {
+    pub path: PathBuf,
+    pub read_dir_state: Option<ReadDirState>,
+    pub read_dir_files_state: Option<ReadDirFilesState>,
+}
+
+impl CoreContext {
+    pub fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            read_dir_state: None,
+            read_dir_files_state: None,
+        }
+    }
+}
+
+impl From<PathBuf> for CoreContext {
+    fn from(path: PathBuf) -> Self {
+        Self::new(path)
+    }
+}
+
+impl From<&str> for CoreContext {
+    fn from(s: &str) -> Self {
+        Self::new(s.into())
+    }
+}
 
 // Object Hierarchy according to Cryptoki
 // - Storage
@@ -511,14 +564,14 @@ pub enum Mechanism {
     X255,
     /// Used to serialize the output of a diffie-hellman
     SharedSecret,
-    //TODO: Do we want to distinguish PKCS_v1.5 vs PSS/OAEP right here?
-    Rsa2048,
+    Rsa2048Pkcs1v15,
+    Rsa3072Pkcs1v15,
+    Rsa4096Pkcs1v15,
+
+    // TODO: drop the following once we drop the RSA mechanisms in core
     Rsa2048Pkcs,
-    Rsa2048Pss,
     Rsa3072Pkcs,
-    Rsa3072Pss,
     Rsa4096Pkcs,
-    Rsa4096Pss,
 }
 
 pub type LongData = Bytes<MAX_LONG_DATA_LENGTH>;
@@ -536,15 +589,17 @@ pub enum KeySerialization {
     EcdhEsHkdf256,
     Raw,
     Sec1,
-    /// RSA OpenPGP private key import format
+    /// Used by backends implementing RSA.
     ///
-    /// Corresponds to [RsaCrtImportFormat](RsaCrtImportFormat)
-    RsaCrt,
-    /// RSA Public key modulus
-    RsaN,
-    /// RSA Public key exponent
-    RsaE,
+    /// Since RSA keys have multiple parts, and that the [`SerializeKey`](crate::api::Reply::SerializeKey) and
+    /// [`UnsafeInjectKey`](crate::api::Request::UnsafeInjectKey) have only transfer one byte array, the RSA key is serialized with postcard
+    RsaParts,
     Pkcs8Der,
+
+    // TODO: drop the following once we drop the RSA mechanisms in core
+    RsaCrt,
+    RsaN,
+    RsaE,
 }
 
 pub type Signature = Bytes<MAX_SIGNATURE_LENGTH>;

@@ -6,7 +6,6 @@
 //! [pkcs11-headers]: https://docs.oasis-open.org/pkcs11/pkcs11-base/v3.0/cs01/include/pkcs11-v3.0/
 
 use crate::types::*;
-use core::hint::unreachable_unchecked;
 use core::time::Duration;
 
 #[macro_use]
@@ -103,6 +102,16 @@ generate_enums! {
     // Other //
     ///////////
     DebugDumpStore: 0x79
+
+    SerdeExtension: 0x5E
+}
+
+pub trait RequestVariant: Into<Request> + TryFrom<Request, Error = crate::Error> {
+    type Reply: ReplyVariant<Request = Self>;
+}
+
+pub trait ReplyVariant: Into<Reply> + TryFrom<Reply, Error = crate::Error> {
+    type Request: RequestVariant<Reply = Self>;
 }
 
 pub mod request {
@@ -332,6 +341,9 @@ pub mod request {
           - location: Location
           - der: Message
 
+        SerdeExtension:
+          - id: u8
+          - request: Bytes<{ crate::config::SERDE_EXTENSION_REQUEST_LENGTH }>
     }
 }
 
@@ -482,5 +494,8 @@ pub mod reply {
 
         WriteCertificate:
           - id: CertId
+
+        SerdeExtension:
+          - reply: Bytes<{ crate::config::SERDE_EXTENSION_REPLY_LENGTH }>
     }
 }

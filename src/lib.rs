@@ -13,6 +13,9 @@
 // #[cfg(test)]
 // extern crate std;
 
+// Temporarily disabled until documentation coverage is improved.
+#![allow(clippy::missing_safety_doc)]
+
 #[macro_use]
 extern crate delog;
 generate_macros!();
@@ -24,6 +27,7 @@ extern crate alloc;
 pub use interchange::Interchange;
 
 pub mod api;
+pub mod backend;
 pub mod client;
 pub mod config;
 pub mod error;
@@ -31,6 +35,8 @@ pub mod key;
 pub mod mechanisms;
 pub mod pipe;
 pub mod platform;
+#[cfg(feature = "serde-extensions")]
+pub mod serde_extensions;
 pub mod service;
 pub mod store;
 pub mod types;

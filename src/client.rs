@@ -75,13 +75,15 @@
 //! the `Ready` variant of the `core::task::Poll` struct returns by the `FutureResult`'s `poll` method.
 //! Possible causes are listed in `trussed::error::Error`.
 //!
-use core::marker::PhantomData;
+use core::{marker::PhantomData, task::Poll};
 
-use interchange::Requester;
+use interchange::{Interchange as _, Requester};
 
 use crate::api::*;
+use crate::backend::{BackendId, CoreOnly, Dispatch};
 use crate::error::*;
 use crate::pipe::TrussedInterchange;
+use crate::service::Service;
 use crate::types::*;
 
 pub use crate::platform::Syscall;
@@ -96,9 +98,10 @@ pub enum ClientError {
     Full,
     Pending,
     DataTooLarge,
+    SerializationFailed,
 }
 
-pub type ClientResult<'c, T, C> = core::result::Result<FutureResult<'c, T, C>, ClientError>;
+pub type ClientResult<'c, T, C> = Result<FutureResult<'c, T, C>, ClientError>;
 
 /// All-in-one trait bounding on the sub-traits.
 pub trait Client:
@@ -106,29 +109,25 @@ pub trait Client:
 {
 }
 
-impl<S: Syscall> Client for ClientImplementation<S> {}
+impl<S: Syscall, E> Client for ClientImplementation<S, E> {}
 
 /// Lowest level interface, use one of the higher level ones.
 pub trait PollClient {
-    fn request<T: From<crate::api::Reply>>(
-        &mut self,
-        req: impl Into<Request>,
-    ) -> ClientResult<'_, T, Self>;
-    fn poll(&mut self) -> core::task::Poll<core::result::Result<Reply, Error>>;
-    fn syscall(&mut self);
+    fn request<Rq: RequestVariant>(&mut self, req: Rq) -> ClientResult<'_, Rq::Reply, Self>;
+    fn poll(&mut self) -> Poll<Result<Reply, Error>>;
 }
 
 pub struct FutureResult<'c, T, C: ?Sized>
 where
     C: PollClient,
 {
-    client: &'c mut C,
+    pub(crate) client: &'c mut C,
     __: PhantomData<T>,
 }
 
 impl<'c, T, C> FutureResult<'c, T, C>
 where
-    T: From<crate::api::Reply>,
+    T: ReplyVariant,
     C: PollClient,
 {
     pub fn new(client: &'c mut C) -> Self {
@@ -137,18 +136,15 @@ where
             __: PhantomData,
         }
     }
-    pub fn poll(&mut self) -> core::task::Poll<core::result::Result<T, Error>> {
-        use core::task::Poll::{Pending, Ready};
-        match self.client.poll() {
-            Ready(Ok(reply)) => Ready(Ok(T::from(reply))),
-            Ready(Err(error)) => Ready(Err(error)),
-            Pending => Pending,
-        }
+    pub fn poll(&mut self) -> Poll<Result<T, Error>> {
+        self.client
+            .poll()
+            .map(|result| result.and_then(TryFrom::try_from))
     }
 }
 
 /// The client implementation client applications actually receive.
-pub struct ClientImplementation<S> {
+pub struct ClientImplementation<S, D = CoreOnly> {
     // raw: RawClient<Client<S>>,
     syscall: S,
 
@@ -156,6 +152,7 @@ pub struct ClientImplementation<S> {
     pub(crate) interchange: Requester<TrussedInterchange>,
     // pending: Option<Discriminant<Request>>,
     pending: Option<u8>,
+    _marker: PhantomData<D>,
 }
 
 // impl<S> From<(RawClient, S)> for Client<S>
@@ -166,7 +163,7 @@ pub struct ClientImplementation<S> {
 //     }
 // }
 
-impl<S> ClientImplementation<S>
+impl<S, E> ClientImplementation<S, E>
 where
     S: Syscall,
 {
@@ -175,15 +172,16 @@ where
             interchange,
             pending: None,
             syscall,
+            _marker: Default::default(),
         }
     }
 }
 
-impl<S> PollClient for ClientImplementation<S>
+impl<S, E> PollClient for ClientImplementation<S, E>
 where
     S: Syscall,
 {
-    fn poll(&mut self) -> core::task::Poll<core::result::Result<Reply, Error>> {
+    fn poll(&mut self) -> Poll<Result<Reply, Error>> {
         match self.interchange.take_response() {
             Some(reply) => {
                 // #[cfg(all(test, feature = "verbose-tests"))]
@@ -192,7 +190,7 @@ where
                     Ok(reply) => {
                         if Some(u8::from(&reply)) == self.pending {
                             self.pending = None;
-                            core::task::Poll::Ready(Ok(reply))
+                            Poll::Ready(Ok(reply))
                         } else {
                             // #[cfg(all(test, feature = "verbose-tests"))]
                             info!(
@@ -200,24 +198,21 @@ where
                                 Some(u8::from(&reply)),
                                 self.pending
                             );
-                            core::task::Poll::Ready(Err(Error::InternalError))
+                            Poll::Ready(Err(Error::InternalError))
                         }
                     }
                     Err(error) => {
                         self.pending = None;
-                        core::task::Poll::Ready(Err(error))
+                        Poll::Ready(Err(error))
                     }
                 }
             }
-            None => core::task::Poll::Pending,
+            None => Poll::Pending,
         }
     }
 
     // call with any of `crate::api::request::*`
-    fn request<T: From<crate::api::Reply>>(
-        &mut self,
-        req: impl Into<Request>,
-    ) -> ClientResult<'_, T, Self> {
+    fn request<Rq: RequestVariant>(&mut self, req: Rq) -> ClientResult<'_, Rq::Reply, Self> {
         // TODO: handle failure
         // TODO: fail on pending (non-canceled) request)
         if self.pending.is_some() {
@@ -231,20 +226,17 @@ where
         let request = req.into();
         self.pending = Some(u8::from(&request));
         self.interchange.request(&request).map_err(drop).unwrap();
+        self.syscall.syscall();
         Ok(FutureResult::new(self))
-    }
-
-    fn syscall(&mut self) {
-        self.syscall.syscall()
     }
 }
 
-impl<S: Syscall> CertificateClient for ClientImplementation<S> {}
-impl<S: Syscall> CryptoClient for ClientImplementation<S> {}
-impl<S: Syscall> CounterClient for ClientImplementation<S> {}
-impl<S: Syscall> FilesystemClient for ClientImplementation<S> {}
-impl<S: Syscall> ManagementClient for ClientImplementation<S> {}
-impl<S: Syscall> UiClient for ClientImplementation<S> {}
+impl<S: Syscall, E> CertificateClient for ClientImplementation<S, E> {}
+impl<S: Syscall, E> CryptoClient for ClientImplementation<S, E> {}
+impl<S: Syscall, E> CounterClient for ClientImplementation<S, E> {}
+impl<S: Syscall, E> FilesystemClient for ClientImplementation<S, E> {}
+impl<S: Syscall, E> ManagementClient for ClientImplementation<S, E> {}
+impl<S: Syscall, E> UiClient for ClientImplementation<S, E> {}
 
 /// Read/Write + Delete certificates
 pub trait CertificateClient: PollClient {
@@ -252,15 +244,11 @@ pub trait CertificateClient: PollClient {
         &mut self,
         id: CertId,
     ) -> ClientResult<'_, reply::DeleteCertificate, Self> {
-        let r = self.request(request::DeleteCertificate { id })?;
-        r.client.syscall();
-        Ok(r)
+        self.request(request::DeleteCertificate { id })
     }
 
     fn read_certificate(&mut self, id: CertId) -> ClientResult<'_, reply::ReadCertificate, Self> {
-        let r = self.request(request::ReadCertificate { id })?;
-        r.client.syscall();
-        Ok(r)
+        self.request(request::ReadCertificate { id })
     }
 
     /// Currently, this writes the cert (assumed but not verified to be DER)
@@ -273,9 +261,7 @@ pub trait CertificateClient: PollClient {
         der: &[u8],
     ) -> ClientResult<'_, reply::WriteCertificate, Self> {
         let der = Message::from_slice(der).map_err(|_| ClientError::DataTooLarge)?;
-        let r = self.request(request::WriteCertificate { location, der })?;
-        r.client.syscall();
-        Ok(r)
+        self.request(request::WriteCertificate { location, der })
     }
 }
 
@@ -292,14 +278,12 @@ pub trait CryptoClient: PollClient {
         public_key: KeyId,
         attributes: StorageAttributes,
     ) -> ClientResult<'_, reply::Agree, Self> {
-        let r = self.request(request::Agree {
+        self.request(request::Agree {
             mechanism,
             private_key,
             public_key,
             attributes,
-        })?;
-        r.client.syscall();
-        Ok(r)
+        })
     }
 
     fn attest(
@@ -307,12 +291,10 @@ pub trait CryptoClient: PollClient {
         signing_mechanism: Mechanism,
         private_key: KeyId,
     ) -> ClientResult<'_, reply::Attest, Self> {
-        let r = self.request(request::Attest {
+        self.request(request::Attest {
             signing_mechanism,
             private_key,
-        })?;
-        r.client.syscall();
-        Ok(r)
+        })
     }
 
     fn decrypt<'c>(
@@ -329,32 +311,26 @@ pub trait CryptoClient: PollClient {
             Message::from_slice(associated_data).map_err(|_| ClientError::DataTooLarge)?;
         let nonce = ShortData::from_slice(nonce).map_err(|_| ClientError::DataTooLarge)?;
         let tag = ShortData::from_slice(tag).map_err(|_| ClientError::DataTooLarge)?;
-        let r = self.request(request::Decrypt {
+        self.request(request::Decrypt {
             mechanism,
             key,
             message,
             associated_data,
             nonce,
             tag,
-        })?;
-        r.client.syscall();
-        Ok(r)
+        })
     }
 
     fn delete(&mut self, key: KeyId) -> ClientResult<'_, reply::Delete, Self> {
-        let r = self.request(request::Delete {
+        self.request(request::Delete {
             key,
             // mechanism,
-        })?;
-        r.client.syscall();
-        Ok(r)
+        })
     }
 
     /// Skips deleting read-only / manufacture keys (currently, "low ID").
     fn delete_all(&mut self, location: Location) -> ClientResult<'_, reply::DeleteAllKeys, Self> {
-        let r = self.request(request::DeleteAllKeys { location })?;
-        r.client.syscall();
-        Ok(r)
+        self.request(request::DeleteAllKeys { location })
     }
 
     fn derive_key(
@@ -364,14 +340,12 @@ pub trait CryptoClient: PollClient {
         additional_data: Option<MediumData>,
         attributes: StorageAttributes,
     ) -> ClientResult<'_, reply::DeriveKey, Self> {
-        let r = self.request(request::DeriveKey {
+        self.request(request::DeriveKey {
             mechanism,
             base_key,
             additional_data,
             attributes,
-        })?;
-        r.client.syscall();
-        Ok(r)
+        })
     }
 
     fn deserialize_key<'c>(
@@ -383,14 +357,12 @@ pub trait CryptoClient: PollClient {
     ) -> ClientResult<'c, reply::DeserializeKey, Self> {
         let serialized_key =
             SerializedKey::from_slice(serialized_key).map_err(|_| ClientError::DataTooLarge)?;
-        let r = self.request(request::DeserializeKey {
+        self.request(request::DeserializeKey {
             mechanism,
             serialized_key,
             format,
             attributes,
-        })?;
-        r.client.syscall();
-        Ok(r)
+        })
     }
 
     fn encrypt<'c>(
@@ -404,15 +376,13 @@ pub trait CryptoClient: PollClient {
         let message = Message::from_slice(message).map_err(|_| ClientError::DataTooLarge)?;
         let associated_data =
             ShortData::from_slice(associated_data).map_err(|_| ClientError::DataTooLarge)?;
-        let r = self.request(request::Encrypt {
+        self.request(request::Encrypt {
             mechanism,
             key,
             message,
             associated_data,
             nonce,
-        })?;
-        r.client.syscall();
-        Ok(r)
+        })
     }
 
     fn exists(
@@ -420,9 +390,7 @@ pub trait CryptoClient: PollClient {
         mechanism: Mechanism,
         key: KeyId,
     ) -> ClientResult<'_, reply::Exists, Self> {
-        let r = self.request(request::Exists { key, mechanism })?;
-        r.client.syscall();
-        Ok(r)
+        self.request(request::Exists { key, mechanism })
     }
 
     fn generate_key(
@@ -430,12 +398,10 @@ pub trait CryptoClient: PollClient {
         mechanism: Mechanism,
         attributes: StorageAttributes,
     ) -> ClientResult<'_, reply::GenerateKey, Self> {
-        let r = self.request(request::GenerateKey {
+        self.request(request::GenerateKey {
             mechanism,
             attributes,
-        })?;
-        r.client.syscall();
-        Ok(r)
+        })
     }
 
     fn generate_secret_key(
@@ -443,12 +409,10 @@ pub trait CryptoClient: PollClient {
         size: usize,
         persistence: Location,
     ) -> ClientResult<'_, reply::GenerateSecretKey, Self> {
-        let r = self.request(request::GenerateSecretKey {
+        self.request(request::GenerateSecretKey {
             size,
             attributes: StorageAttributes::new().set_persistence(persistence),
-        })?;
-        r.client.syscall();
-        Ok(r)
+        })
     }
 
     fn hash(
@@ -456,15 +420,11 @@ pub trait CryptoClient: PollClient {
         mechanism: Mechanism,
         message: Message,
     ) -> ClientResult<'_, reply::Hash, Self> {
-        let r = self.request(request::Hash { mechanism, message })?;
-        r.client.syscall();
-        Ok(r)
+        self.request(request::Hash { mechanism, message })
     }
 
     fn random_bytes(&mut self, count: usize) -> ClientResult<'_, reply::RandomBytes, Self> {
-        let r = self.request(request::RandomBytes { count })?;
-        r.client.syscall();
-        Ok(r)
+        self.request(request::RandomBytes { count })
     }
 
     fn serialize_key(
@@ -473,13 +433,11 @@ pub trait CryptoClient: PollClient {
         key: KeyId,
         format: KeySerialization,
     ) -> ClientResult<'_, reply::SerializeKey, Self> {
-        let r = self.request(request::SerializeKey {
+        self.request(request::SerializeKey {
             key,
             mechanism,
             format,
-        })?;
-        r.client.syscall();
-        Ok(r)
+        })
     }
 
     fn sign<'c>(
@@ -489,14 +447,12 @@ pub trait CryptoClient: PollClient {
         data: &[u8],
         format: SignatureSerialization,
     ) -> ClientResult<'c, reply::Sign, Self> {
-        let r = self.request(request::Sign {
+        self.request(request::Sign {
             key,
             mechanism,
             message: Bytes::from_slice(data).map_err(|_| ClientError::DataTooLarge)?,
             format,
-        })?;
-        r.client.syscall();
-        Ok(r)
+        })
     }
 
     fn verify<'c>(
@@ -507,15 +463,13 @@ pub trait CryptoClient: PollClient {
         signature: &[u8],
         format: SignatureSerialization,
     ) -> ClientResult<'c, reply::Verify, Self> {
-        let r = self.request(request::Verify {
+        self.request(request::Verify {
             mechanism,
             key,
             message: Message::from_slice(message).expect("all good"),
             signature: Signature::from_slice(signature).expect("all good"),
             format,
-        })?;
-        r.client.syscall();
-        Ok(r)
+        })
     }
 
     fn unsafe_inject_key(
@@ -525,14 +479,12 @@ pub trait CryptoClient: PollClient {
         persistence: Location,
         format: KeySerialization,
     ) -> ClientResult<'_, reply::UnsafeInjectKey, Self> {
-        let r = self.request(request::UnsafeInjectKey {
+        self.request(request::UnsafeInjectKey {
             mechanism,
             raw_key: SerializedKey::from_slice(raw_key).unwrap(),
             attributes: StorageAttributes::new().set_persistence(persistence),
             format,
-        })?;
-        r.client.syscall();
-        Ok(r)
+        })
     }
 
     fn unsafe_inject_shared_key(
@@ -540,12 +492,10 @@ pub trait CryptoClient: PollClient {
         raw_key: &[u8],
         location: Location,
     ) -> ClientResult<'_, reply::UnsafeInjectSharedKey, Self> {
-        let r = self.request(request::UnsafeInjectSharedKey {
+        self.request(request::UnsafeInjectSharedKey {
             raw_key: ShortData::from_slice(raw_key).unwrap(),
             location,
-        })?;
-        r.client.syscall();
-        Ok(r)
+        })
     }
 
     fn unwrap_key<'c>(
@@ -558,15 +508,13 @@ pub trait CryptoClient: PollClient {
     ) -> ClientResult<'c, reply::UnwrapKey, Self> {
         let associated_data =
             Message::from_slice(associated_data).map_err(|_| ClientError::DataTooLarge)?;
-        let r = self.request(request::UnwrapKey {
+        self.request(request::UnwrapKey {
             mechanism,
             wrapping_key,
             wrapped_key,
             associated_data,
             attributes,
-        })?;
-        r.client.syscall();
-        Ok(r)
+        })
     }
 
     fn wrap_key(
@@ -578,14 +526,12 @@ pub trait CryptoClient: PollClient {
     ) -> ClientResult<'_, reply::WrapKey, Self> {
         let associated_data =
             Message::from_slice(associated_data).map_err(|_| ClientError::DataTooLarge)?;
-        let r = self.request(request::WrapKey {
+        self.request(request::WrapKey {
             mechanism,
             wrapping_key,
             key,
             associated_data,
-        })?;
-        r.client.syscall();
-        Ok(r)
+        })
     }
 }
 
@@ -595,27 +541,21 @@ pub trait CounterClient: PollClient {
         &mut self,
         location: Location,
     ) -> ClientResult<'_, reply::CreateCounter, Self> {
-        let r = self.request(request::CreateCounter { location })?;
-        r.client.syscall();
-        Ok(r)
+        self.request(request::CreateCounter { location })
     }
 
     fn increment_counter(
         &mut self,
         id: CounterId,
     ) -> ClientResult<'_, reply::IncrementCounter, Self> {
-        let r = self.request(request::IncrementCounter { id })?;
-        r.client.syscall();
-        Ok(r)
+        self.request(request::IncrementCounter { id })
     }
 }
 
 /// Read/Write/Delete files, iterate over directories.
 pub trait FilesystemClient: PollClient {
     fn debug_dump_store(&mut self) -> ClientResult<'_, reply::DebugDumpStore, Self> {
-        let r = self.request(request::DebugDumpStore {})?;
-        r.client.syscall();
-        Ok(r)
+        self.request(request::DebugDumpStore {})
     }
 
     fn read_dir_first(
@@ -624,19 +564,15 @@ pub trait FilesystemClient: PollClient {
         dir: PathBuf,
         not_before_filename: Option<PathBuf>,
     ) -> ClientResult<'_, reply::ReadDirFirst, Self> {
-        let r = self.request(request::ReadDirFirst {
+        self.request(request::ReadDirFirst {
             location,
             dir,
             not_before_filename,
-        })?;
-        r.client.syscall();
-        Ok(r)
+        })
     }
 
     fn read_dir_next(&mut self) -> ClientResult<'_, reply::ReadDirNext, Self> {
-        let r = self.request(request::ReadDirNext {})?;
-        r.client.syscall();
-        Ok(r)
+        self.request(request::ReadDirNext {})
     }
 
     fn read_dir_files_first(
@@ -645,29 +581,23 @@ pub trait FilesystemClient: PollClient {
         dir: PathBuf,
         user_attribute: Option<UserAttribute>,
     ) -> ClientResult<'_, reply::ReadDirFilesFirst, Self> {
-        let r = self.request(request::ReadDirFilesFirst {
+        self.request(request::ReadDirFilesFirst {
             dir,
             location,
             user_attribute,
-        })?;
-        r.client.syscall();
-        Ok(r)
+        })
     }
 
     fn read_dir_files_next(&mut self) -> ClientResult<'_, reply::ReadDirFilesNext, Self> {
-        let r = self.request(request::ReadDirFilesNext {})?;
-        r.client.syscall();
-        Ok(r)
+        self.request(request::ReadDirFilesNext {})
     }
 
     fn remove_dir(
         &mut self,
         location: Location,
         path: PathBuf,
-    ) -> ClientResult<'_, reply::RemoveDirAll, Self> {
-        let r = self.request(request::RemoveDir { location, path })?;
-        r.client.syscall();
-        Ok(r)
+    ) -> ClientResult<'_, reply::RemoveDir, Self> {
+        self.request(request::RemoveDir { location, path })
     }
 
     fn remove_dir_all(
@@ -675,9 +605,7 @@ pub trait FilesystemClient: PollClient {
         location: Location,
         path: PathBuf,
     ) -> ClientResult<'_, reply::RemoveDirAll, Self> {
-        let r = self.request(request::RemoveDirAll { location, path })?;
-        r.client.syscall();
-        Ok(r)
+        self.request(request::RemoveDirAll { location, path })
     }
 
     fn remove_file(
@@ -685,9 +613,7 @@ pub trait FilesystemClient: PollClient {
         location: Location,
         path: PathBuf,
     ) -> ClientResult<'_, reply::RemoveFile, Self> {
-        let r = self.request(request::RemoveFile { location, path })?;
-        r.client.syscall();
-        Ok(r)
+        self.request(request::RemoveFile { location, path })
     }
 
     fn read_file(
@@ -695,9 +621,7 @@ pub trait FilesystemClient: PollClient {
         location: Location,
         path: PathBuf,
     ) -> ClientResult<'_, reply::ReadFile, Self> {
-        let r = self.request(request::ReadFile { location, path })?;
-        r.client.syscall();
-        Ok(r)
+        self.request(request::ReadFile { location, path })
     }
 
     /// Fetch the Metadata for a file or directory
@@ -708,9 +632,7 @@ pub trait FilesystemClient: PollClient {
         location: Location,
         path: PathBuf,
     ) -> ClientResult<'_, reply::Metadata, Self> {
-        let r = self.request(request::Metadata { location, path })?;
-        r.client.syscall();
-        Ok(r)
+        self.request(request::Metadata { location, path })
     }
 
     fn locate_file(
@@ -719,13 +641,11 @@ pub trait FilesystemClient: PollClient {
         dir: Option<PathBuf>,
         filename: PathBuf,
     ) -> ClientResult<'_, reply::LocateFile, Self> {
-        let r = self.request(request::LocateFile {
+        self.request(request::LocateFile {
             location,
             dir,
             filename,
-        })?;
-        r.client.syscall();
-        Ok(r)
+        })
     }
 
     fn write_file(
@@ -735,29 +655,23 @@ pub trait FilesystemClient: PollClient {
         data: Message,
         user_attribute: Option<UserAttribute>,
     ) -> ClientResult<'_, reply::WriteFile, Self> {
-        let r = self.request(request::WriteFile {
+        self.request(request::WriteFile {
             location,
             path,
             data,
             user_attribute,
-        })?;
-        r.client.syscall();
-        Ok(r)
+        })
     }
 }
 
 /// All the other methods that are fit to expose.
 pub trait ManagementClient: PollClient {
     fn reboot(&mut self, to: reboot::To) -> ClientResult<'_, reply::Reboot, Self> {
-        let r = self.request(request::Reboot { to })?;
-        r.client.syscall();
-        Ok(r)
+        self.request(request::Reboot { to })
     }
 
     fn uptime(&mut self) -> ClientResult<'_, reply::Uptime, Self> {
-        let r = self.request(request::Uptime {})?;
-        r.client.syscall();
-        Ok(r)
+        self.request(request::Uptime {})
     }
 }
 
@@ -767,18 +681,101 @@ pub trait UiClient: PollClient {
         &mut self,
         timeout_milliseconds: u32,
     ) -> ClientResult<'_, reply::RequestUserConsent, Self> {
-        let r = self.request(request::RequestUserConsent {
+        self.request(request::RequestUserConsent {
             level: consent::Level::Normal,
             timeout_milliseconds,
-        })?;
-        r.client.syscall();
-        Ok(r)
+        })
     }
 
     fn wink(&mut self, duration: core::time::Duration) -> ClientResult<'_, reply::Wink, Self> {
-        let r = self.request(request::Wink { duration })?;
-        r.client.syscall();
-        Ok(r)
+        self.request(request::Wink { duration })
+    }
+}
+
+/// Builder for [`ClientImplementation`][].
+///
+/// This builder can be used to select the backends used for the client.  If no backends are used,
+/// [`Service::try_new_client`][], [`Service::try_as_new_client`][] and
+/// [`Service::try_into_new_client`][] can be used directly.
+///
+/// The maximum number of clients that can be created is defined by the `clients-?` features.  If
+/// this number is exceeded, [`Error::ClientCountExceeded`][] is returned.
+pub struct ClientBuilder<D: Dispatch = CoreOnly> {
+    id: PathBuf,
+    backends: &'static [BackendId<D::BackendId>],
+}
+
+impl ClientBuilder {
+    /// Creates a new client builder using the given client ID.
+    ///
+    /// Per default, the client does not support backends and always uses the Trussed core
+    /// implementation to execute requests.
+    pub fn new(id: impl Into<PathBuf>) -> Self {
+        Self {
+            id: id.into(),
+            backends: &[],
+        }
+    }
+}
+
+impl<D: Dispatch> ClientBuilder<D> {
+    /// Selects the backends to use for this client.
+    ///
+    /// If `backends` is empty, the Trussed core implementation is always used.
+    pub fn backends<E: Dispatch>(
+        self,
+        backends: &'static [BackendId<E::BackendId>],
+    ) -> ClientBuilder<E> {
+        ClientBuilder {
+            id: self.id,
+            backends,
+        }
+    }
+
+    fn create_endpoint<P: Platform>(
+        self,
+        service: &mut Service<P, D>,
+    ) -> Result<Requester<TrussedInterchange>, Error> {
+        let (requester, responder) =
+            TrussedInterchange::claim().ok_or(Error::ClientCountExceeded)?;
+        service.add_endpoint(responder, self.id, self.backends)?;
+        Ok(requester)
+    }
+
+    /// Prepare a client using the given service.
+    ///
+    /// This allocates a [`TrussedInterchange`][] and a
+    /// [`ServiceEndpoint`][`crate::service::ServiceEndpoint`].
+    pub fn prepare<P: Platform>(
+        self,
+        service: &mut Service<P, D>,
+    ) -> Result<PreparedClient<D>, Error> {
+        self.create_endpoint(service)
+            .map(|requester| PreparedClient::new(requester))
+    }
+}
+
+/// An intermediate step of the [`ClientBuilder`][].
+///
+/// This struct already has an allocated [`TrussedInterchange`][] and
+/// [`ServiceEndpoint`][`crate::service::ServiceEndpoint`] but still needs a [`Syscall`][]
+/// implementation.
+pub struct PreparedClient<D> {
+    requester: Requester<TrussedInterchange>,
+    _marker: PhantomData<D>,
+}
+
+impl<D> PreparedClient<D> {
+    fn new(requester: Requester<TrussedInterchange>) -> Self {
+        Self {
+            requester,
+            _marker: Default::default(),
+        }
+    }
+
+    /// Builds the client using the given syscall implementation.
+    pub fn build<S: Syscall>(self, syscall: S) -> ClientImplementation<S, D> {
+        ClientImplementation::new(self.requester, syscall)
     }
 }
 

@@ -1,11 +1,12 @@
 macro_rules! generate_enums {
-    ($($which:ident: $index:literal)*) => {
+    ($($(#[$attr:meta])? $which:ident: $index:literal)*) => {
 
     #[derive(Clone, Eq, PartialEq, Debug)]
     #[allow(clippy::large_enum_variant)]
     pub enum Request {
         DummyRequest, // for testing
         $(
+        $(#[$attr])?
         $which(request::$which),
         )*
     }
@@ -15,6 +16,7 @@ macro_rules! generate_enums {
     pub enum Reply {
         DummyReply, // for testing
         $(
+        $(#[$attr])?
         $which(reply::$which),
         )*
     }
@@ -24,6 +26,7 @@ macro_rules! generate_enums {
             match request {
                 Request::DummyRequest => 0,
                 $(
+                $(#[$attr])?
                 Request::$which(_) => $index,
                 )*
             }
@@ -35,6 +38,7 @@ macro_rules! generate_enums {
             match reply {
                 Reply::DummyReply => 0,
                 $(
+                $(#[$attr])?
                 Reply::$which(_) => $index,
                 )*
             }
@@ -45,10 +49,12 @@ macro_rules! generate_enums {
 
 macro_rules! impl_request {
     ($(
+        $(#[$attr:meta])?
         $request:ident:
             $(- $name:tt: $type:path)*
     )*)
         => {$(
+    $(#[$attr])?
     #[derive(Clone, Eq, PartialEq, Debug, serde_indexed::DeserializeIndexed, serde_indexed::SerializeIndexed)]
     pub struct $request {
         $(
@@ -56,10 +62,24 @@ macro_rules! impl_request {
         )*
     }
 
+    $(#[$attr])?
     impl From<$request> for Request {
         fn from(request: $request) -> Self {
             Self::$request(request)
         }
+    }
+    impl core::convert::TryFrom<Request> for $request {
+        type Error = crate::Error;
+        fn try_from(request: Request) -> Result<request::$request, Self::Error> {
+            match request {
+                Request::$request(request) => Ok(request),
+                _ => Err(crate::Error::InternalError),
+            }
+        }
+    }
+
+    impl RequestVariant for $request {
+        type Reply = reply::$request;
     }
 
     )*}
@@ -67,11 +87,13 @@ macro_rules! impl_request {
 
 macro_rules! impl_reply {
     ($(
+        $(#[$attr:meta])?
         $reply:ident:
             $(- $name:tt: $type:ty)*
     )*)
         => {$(
 
+    $(#[$attr])?
     #[derive(Clone, Eq, PartialEq, Debug, serde_indexed::DeserializeIndexed, serde_indexed::SerializeIndexed)]
     pub struct $reply {
         $(
@@ -79,23 +101,25 @@ macro_rules! impl_reply {
         )*
     }
 
-    // impl core::convert::TryFrom<Reply> for $reply {
-    //     type Error = ();
-    //     fn try_from(reply: Reply) -> Result<reply::$reply, Self::Error> {
-    //         match reply {
-    //             Reply::$reply(reply) => Ok(reply),
-    //             _ => Err(()),
-    //         }
-    //     }
-    // }
-
-    impl From<Reply> for $reply {
-        fn from(reply: Reply) -> reply::$reply {
+    $(#[$attr])?
+    impl core::convert::TryFrom<Reply> for $reply {
+        type Error = crate::Error;
+        fn try_from(reply: Reply) -> Result<reply::$reply, Self::Error> {
             match reply {
-                Reply::$reply(reply) => reply,
-                _ => { unsafe { unreachable_unchecked() } }
+                Reply::$reply(reply) => Ok(reply),
+                _ => Err(crate::Error::InternalError),
             }
         }
+    }
+
+    impl core::convert::From<$reply> for Reply {
+        fn from(reply: $reply) -> Reply {
+            Reply::$reply(reply)
+        }
+    }
+
+    impl ReplyVariant for $reply {
+        type Request = request::$reply;
     }
 
     )*}
