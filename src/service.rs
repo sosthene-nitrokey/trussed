@@ -1,5 +1,3 @@
-use heapless_bytes::Unsigned;
-use interchange::Responder;
 use littlefs2::path::PathBuf;
 use rand_chacha::ChaCha8Rng;
 pub use rand_core::{RngCore, SeedableRng};
@@ -12,7 +10,7 @@ use crate::error::{Error, Result};
 pub use crate::key;
 use crate::mechanisms;
 pub use crate::pipe::ServiceEndpoint;
-use crate::pipe::TrussedInterchange;
+use crate::pipe::TrussedResponder;
 use crate::platform::*;
 pub use crate::store::{
     certstore::{Certstore as _, ClientCertstore},
@@ -84,7 +82,7 @@ where
     P: Platform,
     D: Dispatch,
 {
-    eps: Vec<ServiceEndpoint<D::BackendId, D::Context>, { MAX_SERVICE_CLIENTS::USIZE }>,
+    eps: Vec<ServiceEndpoint<D::BackendId, D::Context>, { MAX_SERVICE_CLIENTS }>,
     resources: ServiceResources<P>,
     dispatch: D,
 }
@@ -759,7 +757,7 @@ impl<P: Platform> Service<P> {
 impl<P: Platform, D: Dispatch> Service<P, D> {
     pub fn add_endpoint(
         &mut self,
-        interchange: Responder<TrussedInterchange>,
+        interchange: TrussedResponder,
         core_ctx: impl Into<CoreContext>,
         backends: &'static [BackendId<D::BackendId>],
     ) -> Result<(), Error> {
@@ -830,7 +828,7 @@ impl<P: Platform, D: Dispatch> Service<P, D> {
                     .platform
                     .user_interface()
                     .set_status(ui::Status::Idle);
-                ep.interchange.respond(&reply_result).ok();
+                ep.interchange.respond(reply_result).ok();
             }
         }
         debug_now!(
