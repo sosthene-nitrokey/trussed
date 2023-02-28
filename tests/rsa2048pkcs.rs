@@ -96,7 +96,7 @@ fn rsa2048pkcs_sign_verify() {
         let hash_prefix = hex!("3031 300d 0609 608648016503040201 0500 0420");
         let message = [1u8, 2u8, 3u8];
         use sha2::digest::Digest;
-        let digest_to_sign: Vec<u8> = sha2::Sha256::digest(&message)
+        let digest_to_sign: Vec<u8> = sha2::Sha256::digest(message)
             .into_iter()
             .chain(hash_prefix)
             .collect();
@@ -153,7 +153,7 @@ fn rsa2048pkcs_inject() {
         let hash_prefix = hex!("3031 300d 0609 608648016503040201 0500 0420");
         let message = [1u8, 2u8, 3u8];
         use sha2::digest::Digest;
-        let digest = sha2::Sha256::digest(&message);
+        let digest = sha2::Sha256::digest(message);
         let digest_to_sign: Vec<u8> = hash_prefix.into_iter().chain(digest).collect();
 
         let signature = syscall!(client.sign_rsa2048pkcs(sk, &digest_to_sign)).signature;
