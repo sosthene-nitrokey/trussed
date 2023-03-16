@@ -2,7 +2,7 @@ use crate::{
     error::{Error, Result},
     // service::ReadDirState,
     store::{self, Store},
-    types::{LfsStorage, Location, Message, UserAttribute},
+    types::{LfsStorage, Location, Message},
     Bytes,
 };
 
@@ -18,7 +18,6 @@ pub struct ReadDirFilesState {
     real_dir: PathBuf,
     last: usize,
     location: Location,
-    user_attribute: Option<UserAttribute>,
 }
 
 use littlefs2::{
@@ -122,7 +121,6 @@ pub trait Filestore {
         &mut self,
         clients_dir: &PathBuf,
         location: Location,
-        user_attribute: Option<UserAttribute>,
     ) -> Result<Option<(Option<Message>, ReadDirFilesState)>>;
 
     /// Continuation of `read_dir_files_first`.
@@ -230,7 +228,6 @@ impl<S: Store> ClientFilestore<S> {
         &mut self,
         clients_dir: &PathBuf,
         location: Location,
-        user_attribute: Option<UserAttribute>,
         fs: &'static Fs<F>,
     ) -> Result<Option<(Option<Message>, ReadDirFilesState)>> {
         let dir = self.actual_path(clients_dir)?;
@@ -245,25 +242,7 @@ impl<S: Store> ClientFilestore<S> {
                     // Option<usize, Result<DirEntry>> -> ??
                     .map(|(i, entry)| (i, entry.unwrap()))
                     // skip over directories (including `.` and `..`)
-                    .filter(|(_, entry)| entry.file_type().is_file())
-                    // take first entry that meets requirements
-                    .find(|(_, entry)| {
-                        if let Some(user_attribute) = user_attribute.as_ref() {
-                            let mut path = dir.clone();
-                            path.push(entry.file_name());
-                            let attribute = fs
-                                .attribute(&path, crate::config::USER_ATTRIBUTE_NUMBER)
-                                .unwrap();
-
-                            if let Some(attribute) = attribute {
-                                user_attribute == attribute.data()
-                            } else {
-                                false
-                            }
-                        } else {
-                            true
-                        }
-                    })
+                    .find(|(_, entry)| entry.file_type().is_file())
                     // if there is an entry, construct the state that needs storing out of it,
                     // and return the file's contents.
                     // the client, and return both the entry and the state
@@ -272,7 +251,6 @@ impl<S: Store> ClientFilestore<S> {
                             real_dir: dir.clone(),
                             last: i,
                             location,
-                            user_attribute,
                         };
                         // The semantics is that for a non-existent file, we return None (not an error)
                         let data = store::read(self.store, location, entry.path()).ok();
@@ -296,7 +274,6 @@ impl<S: Store> ClientFilestore<S> {
             real_dir,
             last,
             location,
-            user_attribute,
         } = state;
 
         // all we want to do here is skip just past the previously found entry
@@ -309,30 +286,12 @@ impl<S: Store> ClientFilestore<S> {
                     // entry is still a Result :/ (see question in `read_dir_first`)
                     .map(|(i, entry)| (i, entry.unwrap()))
                     // skip over directories (including `.` and `..`)
-                    .filter(|(_, entry)| entry.file_type().is_file())
-                    // take first entry that meets requirements
-                    .find(|(_, entry)| {
-                        if let Some(user_attribute) = user_attribute.as_ref() {
-                            let mut path = real_dir.clone();
-                            path.push(entry.file_name());
-                            let attribute = fs
-                                .attribute(&path, crate::config::USER_ATTRIBUTE_NUMBER)
-                                .unwrap();
-                            if let Some(attribute) = attribute {
-                                user_attribute == attribute.data()
-                            } else {
-                                false
-                            }
-                        } else {
-                            true
-                        }
-                    })
+                    .find(|(_, entry)| entry.file_type().is_file())
                     .map(|(i, entry)| {
                         let read_dir_files_state = ReadDirFilesState {
                             real_dir: real_dir.clone(),
                             last: i,
                             location,
-                            user_attribute,
                         };
                         // The semantics is that for a non-existent file, we return None (not an error)
                         let data = store::read(self.store, location, entry.path()).ok();
@@ -425,27 +384,17 @@ impl<S: Store> Filestore for ClientFilestore<S> {
         &mut self,
         clients_dir: &PathBuf,
         location: Location,
-        user_attribute: Option<UserAttribute>,
     ) -> Result<Option<(Option<Message>, ReadDirFilesState)>> {
         match location {
-            Location::Internal => self.read_dir_files_first_impl(
-                clients_dir,
-                location,
-                user_attribute,
-                self.store.ifs(),
-            ),
-            Location::External => self.read_dir_files_first_impl(
-                clients_dir,
-                location,
-                user_attribute,
-                self.store.efs(),
-            ),
-            Location::Volatile => self.read_dir_files_first_impl(
-                clients_dir,
-                location,
-                user_attribute,
-                self.store.vfs(),
-            ),
+            Location::Internal => {
+                self.read_dir_files_first_impl(clients_dir, location, self.store.ifs())
+            }
+            Location::External => {
+                self.read_dir_files_first_impl(clients_dir, location, self.store.efs())
+            }
+            Location::Volatile => {
+                self.read_dir_files_first_impl(clients_dir, location, self.store.vfs())
+            }
         }
     }
 

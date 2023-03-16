@@ -627,8 +627,6 @@ pub enum SignatureSerialization {
     // Sec1,
 }
 
-pub type UserAttribute = Bytes<MAX_USER_ATTRIBUTE_LENGTH>;
-
 /// Data format for RSA Private key serialization in [KeySerialization::Raw](crate::types::KeySerialization::Raw)
 /// format in [unsafe_inject_key](crate::client::CryptoClient::unsafe_inject_key)
 ///

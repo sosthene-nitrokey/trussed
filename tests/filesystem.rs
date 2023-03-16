@@ -60,13 +60,11 @@ fn iterating(location: Location) {
             location,
             PathBuf::from("foo"),
             Bytes::from_slice(b"foo").unwrap(),
-            None
         ));
         syscall!(client.write_file(
             location,
             PathBuf::from("bar"),
             Bytes::from_slice(b"bar").unwrap(),
-            None
         ));
         let first_entry = syscall!(client.read_dir_first(location, PathBuf::from(""), None))
             .entry
@@ -76,7 +74,7 @@ fn iterating(location: Location) {
         let next_entry = syscall!(client.read_dir_next()).entry.unwrap();
         assert_eq!(next_entry.file_name(), "foo");
 
-        let first_data = syscall!(client.read_dir_files_first(location, PathBuf::from(""), None))
+        let first_data = syscall!(client.read_dir_files_first(location, PathBuf::from("")))
             .data
             .unwrap();
         assert_eq!(first_data, b"bar");
