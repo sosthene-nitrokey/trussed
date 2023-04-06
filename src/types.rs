@@ -175,6 +175,7 @@ pub mod ui {
         WaitingForUserPresence,
         Processing,
         Error,
+        Custom(u8),
     }
 }
 
