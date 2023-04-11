@@ -622,6 +622,20 @@ pub trait FilesystemClient: PollClient {
         self.request(request::ReadFile { location, path })
     }
 
+    // Read part of a file, up to 1KiB starting at `pos`
+    fn read_file_chunk(
+        &mut self,
+        location: Location,
+        path: PathBuf,
+        pos: OpenSeekFrom,
+    ) -> ClientResult<'_, reply::ReadChunk, Self> {
+        self.request(request::ReadChunk {
+            location,
+            path,
+            pos,
+        })
+    }
+
     /// Fetch the Metadata for a file or directory
     ///
     /// If the file doesn't exists, return None
@@ -659,6 +673,64 @@ pub trait FilesystemClient: PollClient {
             data,
             user_attribute,
         })
+    }
+
+    /// Begin writing a file that can be larger than 1KiB
+    ///
+    /// More chunks can be written with [`write_file_chunk`](FilesystemClient::write_file_chunk).
+    /// Before the data becomes readable, it needs to be flushed with [`flush_chunks`](FilesystemClient::flush_chunks), or aborted with [`abort_chunked_write`](FilesystemClient::abort_chunked_write)
+    ///
+    /// Chunked writes are buffered in memory. Failing to abort or flush a chunked write will lead to a memory leak, that can be solved by a power cycle.
+    fn start_chunked_write(
+        &mut self,
+        location: Location,
+        path: PathBuf,
+        data: Message,
+        user_attribute: Option<UserAttribute>,
+    ) -> ClientResult<'_, reply::StartChunkedWrite, Self> {
+        self.request(request::StartChunkedWrite {
+            location,
+            path,
+            data,
+            user_attribute,
+        })
+    }
+
+    /// Write part of a file
+    ///
+    /// See [`start_chunked_write`](FilesystemClient::start_chunked_write).
+    fn write_file_chunk(
+        &mut self,
+        location: Location,
+        path: PathBuf,
+        data: Message,
+        pos: OpenSeekFrom,
+    ) -> ClientResult<'_, reply::WriteChunk, Self> {
+        self.request(request::WriteChunk {
+            location,
+            path,
+            data,
+            pos,
+        })
+    }
+
+    /// Flush a file opened with [`start_chunked_write`](FilesystemClient::start_chunked_write).
+    /// Only after this will the content of the file be readable
+    fn flush_chunks(
+        &mut self,
+        location: Location,
+        path: PathBuf,
+    ) -> ClientResult<'_, reply::FlushChunks, Self> {
+        self.request(request::FlushChunks { location, path })
+    }
+
+    /// Abort writes to a file opened with [`start_chunked_write`](FilesystemClient::start_chunked_write).
+    fn abort_chunked_write(
+        &mut self,
+        location: Location,
+        path: PathBuf,
+    ) -> ClientResult<'_, reply::AbortChunkedWrite, Self> {
+        self.request(request::AbortChunkedWrite { location, path })
     }
 }
 

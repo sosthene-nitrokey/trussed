@@ -2,7 +2,7 @@ use crate::{
     error::{Error, Result},
     // service::ReadDirState,
     store::{self, Store},
-    types::{LfsStorage, Location, Message, UserAttribute},
+    types::{LfsStorage, Location, Message, OpenSeekFrom, UserAttribute},
     Bytes,
 };
 
@@ -56,6 +56,24 @@ impl<S: Store> ClientFilestore<S> {
         Ok(path)
     }
 
+    /// Partially written client files are store below `/<client_id>/part/`.
+    pub fn chunks_path(&self, client_path: &PathBuf, location: Location) -> Result<PathBuf> {
+        // Clients must not escape their namespace
+        if client_path.as_ref().contains("..") {
+            return Err(Error::InvalidPath);
+        }
+
+        let mut path = PathBuf::new();
+        path.push(&self.client_id);
+        match location {
+            Location::Volatile => path.push(&PathBuf::from("vfs-part")),
+            Location::External => path.push(&PathBuf::from("efs-part")),
+            Location::Internal => path.push(&PathBuf::from("ifs-part")),
+        }
+        path.push(client_path);
+        Ok(path)
+    }
+
     // TODO: this is waaay too fiddly, need an approach
     // that totally excludes off-by-N type errors.
     pub fn client_path(&self, actual_path: &Path) -> PathBuf {
@@ -76,7 +94,28 @@ impl<S: Store> ClientFilestore<S> {
 
 pub trait Filestore {
     fn read<const N: usize>(&mut self, path: &PathBuf, location: Location) -> Result<Bytes<N>>;
+    fn read_chunk<const N: usize>(
+        &mut self,
+        path: &PathBuf,
+        location: Location,
+        pos: OpenSeekFrom,
+    ) -> Result<(Bytes<N>, usize)>;
     fn write(&mut self, path: &PathBuf, location: Location, data: &[u8]) -> Result<()>;
+    fn start_chunked_write(
+        &mut self,
+        path: &PathBuf,
+        location: Location,
+        data: &[u8],
+    ) -> Result<()>;
+    fn write_chunk(
+        &mut self,
+        path: &PathBuf,
+        location: Location,
+        data: &[u8],
+        pos: OpenSeekFrom,
+    ) -> Result<()>;
+    fn flush_chunks(&mut self, path: &PathBuf, location: Location) -> Result<()>;
+    fn abort_chunked_write(&mut self, path: &PathBuf, location: Location) -> bool;
     fn exists(&mut self, path: &PathBuf, location: Location) -> bool;
     fn metadata(&mut self, path: &PathBuf, location: Location) -> Result<Option<Metadata>>;
     fn remove_file(&mut self, path: &PathBuf, location: Location) -> Result<()>;
@@ -351,10 +390,60 @@ impl<S: Store> Filestore for ClientFilestore<S> {
 
         store::read(self.store, location, &path)
     }
+    fn read_chunk<const N: usize>(
+        &mut self,
+        path: &PathBuf,
+        location: Location,
+        pos: OpenSeekFrom,
+    ) -> Result<(Bytes<N>, usize)> {
+        let path = self.actual_path(path)?;
+
+        store::read_chunk(self.store, location, &path, pos)
+    }
 
     fn write(&mut self, path: &PathBuf, location: Location, data: &[u8]) -> Result<()> {
         let path = self.actual_path(path)?;
         store::store(self.store, location, &path, data)
+    }
+
+    fn start_chunked_write(
+        &mut self,
+        path: &PathBuf,
+        location: Location,
+        data: &[u8],
+    ) -> Result<()> {
+        let path = self.chunks_path(path, location)?;
+        store::store(self.store, Location::Volatile, &path, data)
+    }
+
+    fn write_chunk(
+        &mut self,
+        path: &PathBuf,
+        location: Location,
+        data: &[u8],
+        pos: OpenSeekFrom,
+    ) -> Result<()> {
+        let path = self.chunks_path(path, location)?;
+        store::write_chunk(self.store, Location::Volatile, &path, data, pos)
+    }
+
+    fn abort_chunked_write(&mut self, path: &PathBuf, location: Location) -> bool {
+        let Ok(path) = self.chunks_path(path, location) else {
+            return false;
+        };
+        store::delete(self.store, Location::Volatile, &path)
+    }
+
+    fn flush_chunks(&mut self, path: &PathBuf, location: Location) -> Result<()> {
+        let chunk_path = self.chunks_path(path, location)?;
+        let client_path = self.actual_path(path)?;
+        store::move_file(
+            self.store,
+            Location::Volatile,
+            &chunk_path,
+            location,
+            &client_path,
+        )
     }
 
     fn exists(&mut self, path: &PathBuf, location: Location) -> bool {
