@@ -1,5 +1,3 @@
-#![cfg(any(feature = "rsa2048", feature = "rsa3072", feature = "rsa4096"))]
-
 use std::mem::size_of;
 
 use trussed::api::{Reply, Request};
