@@ -583,11 +583,6 @@ pub enum Mechanism {
     Rsa2048Pkcs1v15,
     Rsa3072Pkcs1v15,
     Rsa4096Pkcs1v15,
-
-    // TODO: drop the following once we drop the RSA mechanisms in core
-    Rsa2048Pkcs,
-    Rsa3072Pkcs,
-    Rsa4096Pkcs,
 }
 
 pub type LongData = Bytes<MAX_LONG_DATA_LENGTH>;
@@ -611,11 +606,6 @@ pub enum KeySerialization {
     /// [`UnsafeInjectKey`](crate::api::Request::UnsafeInjectKey) have only transfer one byte array, the RSA key is serialized with postcard
     RsaParts,
     Pkcs8Der,
-
-    // TODO: drop the following once we drop the RSA mechanisms in core
-    RsaCrt,
-    RsaN,
-    RsaE,
 }
 
 pub type Signature = Bytes<MAX_SIGNATURE_LENGTH>;
@@ -629,20 +619,6 @@ pub enum SignatureSerialization {
 }
 
 pub type UserAttribute = Bytes<MAX_USER_ATTRIBUTE_LENGTH>;
-
-/// Data format for RSA Private key serialization in [KeySerialization::Raw](crate::types::KeySerialization::Raw)
-/// format in [unsafe_inject_key](crate::client::CryptoClient::unsafe_inject_key)
-///
-/// Serialized using [postcard_serialize_bytes](crate::postcard_serialize_bytes). All data are big endian large integers
-#[derive(Debug, Deserialize, Serialize)]
-pub struct RsaCrtImportFormat<'d> {
-    pub e: &'d [u8],
-    pub p: &'d [u8],
-    pub q: &'d [u8],
-    pub qinv: &'d [u8],
-    pub dp: &'d [u8],
-    pub dq: &'d [u8],
-}
 
 /// Enumeration of possible methods to seek within an file that was just opened
 /// Used in the [`read_chunk`](crate::store::read_chunk) and [`write_chunk`](crate::store::write_chunk) calls,
