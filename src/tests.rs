@@ -408,6 +408,7 @@ fn aead_rng_nonce() {
     .expect("no errors")
     .plaintext;
 
+    assert_ne!(&nonce, &[0; 12]);
     assert_eq!(&message[..], plaintext.unwrap().as_ref());
 }
 

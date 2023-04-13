@@ -339,7 +339,7 @@ pub mod request {
           - mechanism: Mechanism
           - wrapping_key: KeyId
           - key: KeyId
-          - associated_data: Message
+          - associated_data: ShortData
 
         RequestUserConsent:
           - level: consent::Level
