@@ -433,14 +433,6 @@ impl<P: Platform> ServiceResources<P> {
                 }))
             }
 
-            Request::ReadChunk(request) => {
-                let (data,len) = filestore.read_chunk(&request.path,request.location,request.pos)?;
-                Ok(Reply::ReadChunk(reply::ReadChunk {
-                    data,
-                    len,
-                }))
-            }
-
             Request::Metadata(request) => {
                 Ok(Reply::Metadata(reply::Metadata{
                     metadata: filestore.metadata(&request.path, request.location)?
@@ -489,22 +481,6 @@ impl<P: Platform> ServiceResources<P> {
             Request::WriteFile(request) => {
                 filestore.write(&request.path, request.location, &request.data)?;
                 Ok(Reply::WriteFile(reply::WriteFile {} ))
-            }
-            Request::StartChunkedWrite(request) => {
-                filestore.start_chunked_write(&request.path, request.location, &request.data)?;
-                Ok(Reply::StartChunkedWrite(reply::StartChunkedWrite {} ))
-            }
-            Request::WriteChunk(request) => {
-                 filestore.write_chunk(&request.path, request.location, &request.data,request.pos)?;
-                Ok(Reply::WriteChunk(reply::WriteChunk {} ))
-            }
-            Request::FlushChunks(request) => {
-                filestore.flush_chunks(&request.path, request.location)?;
-                Ok(Reply::FlushChunks(reply::FlushChunks {} ))
-            }
-            Request::AbortChunkedWrite(request) => {
-                let aborted = filestore.abort_chunked_write(&request.path, request.location);
-                Ok(Reply::AbortChunkedWrite(reply::AbortChunkedWrite {aborted} ))
             }
 
             Request::UnwrapKey(request) => {
