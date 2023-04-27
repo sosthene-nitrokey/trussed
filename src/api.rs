@@ -43,24 +43,17 @@ generate_enums! {
     ReadDirFilesFirst: 13
     ReadDirFilesNext: 14
     ReadFile: 15
-    ReadChunk: 65
     Metadata: 26
     // ReadCounter: 7
     RandomBytes: 16
     SerializeKey: 17
     Sign: 18
     WriteFile: 19
-    StartChunkedWrite: 66
-    WriteChunk: 67
-    FlushChunks: 68
-    AbortChunkedWrite: 69
     UnsafeInjectKey: 20
     UnsafeInjectSharedKey: 21
     UnwrapKey: 22
-    UnwrapKeyFromFile: 70
     Verify: 23
     WrapKey: 24
-    WrapKeyToFile: 71
 
     Attest: 0xFF
 
@@ -249,10 +242,6 @@ pub mod request {
         ReadFile:
           - location: Location
           - path: PathBuf
-        ReadChunk:
-          - location: Location
-          - pos: OpenSeekFrom
-          - path: PathBuf
 
         Metadata:
           - location: Location
@@ -294,24 +283,6 @@ pub mod request {
           - data: Message
           - user_attribute: Option<UserAttribute>
 
-        StartChunkedWrite:
-          - location: Location
-          - path: PathBuf
-          - data: Message
-          - user_attribute: Option<UserAttribute>
-
-        WriteChunk:
-          - location: Location
-          - pos: OpenSeekFrom
-          - path: PathBuf
-          - data: Message
-        FlushChunks:
-          - location: Location
-          - path: PathBuf
-        AbortChunkedWrite:
-          - location: Location
-          - path: PathBuf
-
         UnsafeInjectKey:
           - mechanism: Mechanism        // -> implies key type
           - raw_key: SerializedKey
@@ -342,23 +313,6 @@ pub mod request {
           - wrapping_key: KeyId
           - key: KeyId
           - associated_data: ShortData
-
-        // this should always be an AEAD algorithm
-        WrapKeyToFile:
-          - mechanism: Mechanism
-          - wrapping_key: KeyId
-          - key: KeyId
-          - path: PathBuf
-          - location: Location
-          - associated_data: Message
-
-        UnwrapKeyFromFile:
-          - mechanism: Mechanism
-          - key: KeyId
-          - path: PathBuf
-          - file_location: Location
-          - key_location: Location
-          - associated_data: Message
 
         RequestUserConsent:
           - level: consent::Level
@@ -480,9 +434,6 @@ pub mod reply {
 
         ReadFile:
           - data: Message
-        ReadChunk:
-          - data: Message
-          - len: usize
 
         Metadata:
           - metadata: Option<crate::types::Metadata>
@@ -507,11 +458,6 @@ pub mod reply {
             - signature: Signature
 
         WriteFile:
-        StartChunkedWrite:
-        WriteChunk:
-        FlushChunks:
-        AbortChunkedWrite:
-            - aborted: bool
 
         Verify:
             - valid: bool
@@ -525,14 +471,8 @@ pub mod reply {
         UnwrapKey:
             - key: Option<KeyId>
 
-        UnwrapKeyFromFile:
-          - key: Option<KeyId>
-
         WrapKey:
             - wrapped_key: Message
-
-        // this should always be an AEAD algorithm
-        WrapKeyToFile:
 
         // UI
         RequestUserConsent:

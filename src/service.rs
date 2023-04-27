@@ -433,14 +433,6 @@ impl<P: Platform> ServiceResources<P> {
                 }))
             }
 
-            Request::ReadChunk(request) => {
-                let (data,len) = filestore.read_chunk(&request.path,request.location,request.pos)?;
-                Ok(Reply::ReadChunk(reply::ReadChunk {
-                    data,
-                    len,
-                }))
-            }
-
             Request::Metadata(request) => {
                 Ok(Reply::Metadata(reply::Metadata{
                     metadata: filestore.metadata(&request.path, request.location)?
@@ -490,22 +482,6 @@ impl<P: Platform> ServiceResources<P> {
                 filestore.write(&request.path, request.location, &request.data)?;
                 Ok(Reply::WriteFile(reply::WriteFile {} ))
             }
-            Request::StartChunkedWrite(request) => {
-                filestore.start_chunked_write(&request.path, request.location, &request.data)?;
-                Ok(Reply::StartChunkedWrite(reply::StartChunkedWrite {} ))
-            }
-            Request::WriteChunk(request) => {
-                 filestore.write_chunk(&request.path, request.location, &request.data,request.pos)?;
-                Ok(Reply::WriteChunk(reply::WriteChunk {} ))
-            }
-            Request::FlushChunks(request) => {
-                filestore.flush_chunks(&request.path, request.location)?;
-                Ok(Reply::FlushChunks(reply::FlushChunks {} ))
-            }
-            Request::AbortChunkedWrite(request) => {
-                let aborted = filestore.abort_chunked_write(&request.path, request.location);
-                Ok(Reply::AbortChunkedWrite(reply::AbortChunkedWrite {aborted} ))
-            }
 
             Request::UnwrapKey(request) => {
                 match request.mechanism {
@@ -534,22 +510,6 @@ impl<P: Platform> ServiceResources<P> {
                     _ => Err(Error::MechanismNotAvailable),
 
                 }.map(Reply::WrapKey)
-            },
-            Request::WrapKeyToFile(request) => {
-                match request.mechanism {
-                    #[cfg(feature = "chacha8-poly1305")]
-                    Mechanism::Chacha8Poly1305 => mechanisms::Chacha8Poly1305::wrap_key_to_file(keystore, filestore, request),
-                    _ => Err(Error::MechanismNotAvailable),
-
-                }.map(Reply::WrapKeyToFile)
-            },
-            Request::UnwrapKeyFromFile(request) => {
-                match request.mechanism {
-                    #[cfg(feature = "chacha8-poly1305")]
-                    Mechanism::Chacha8Poly1305 => mechanisms::Chacha8Poly1305::unwrap_key_from_file(keystore, filestore, request),
-                    _ => Err(Error::MechanismNotAvailable),
-
-                }.map(Reply::UnwrapKeyFromFile)
             },
 
             Request::RequestUserConsent(request) => {
