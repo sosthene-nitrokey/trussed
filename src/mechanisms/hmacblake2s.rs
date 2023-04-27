@@ -10,8 +10,9 @@ impl DeriveKey for super::HmacBlake2s {
         keystore: &mut impl Keystore,
         request: &request::DeriveKey,
     ) -> Result<reply::DeriveKey, Error> {
+        use blake2::Blake2s256;
         use hmac::{Mac, SimpleHmac};
-        type HmacBlake2s = SimpleHmac<blake2::Blake2s256>;
+        type HmacBlake2s = SimpleHmac<Blake2s256>;
 
         let key = keystore.load_key(key::Secrecy::Secret, None, &request.base_key)?;
         if !matches!(key.kind, key::Kind::Symmetric(..) | key::Kind::Shared(..)) {
@@ -45,8 +46,9 @@ impl DeriveKey for super::HmacBlake2s {
 impl Sign for super::HmacBlake2s {
     #[inline(never)]
     fn sign(keystore: &mut impl Keystore, request: &request::Sign) -> Result<reply::Sign, Error> {
+        use blake2::Blake2s256;
         use hmac::{Mac, SimpleHmac};
-        type HmacBlake2s = SimpleHmac<blake2::Blake2s256>;
+        type HmacBlake2s = SimpleHmac<Blake2s256>;
 
         let key = keystore.load_key(key::Secrecy::Secret, None, &request.key)?;
         if !matches!(key.kind, key::Kind::Symmetric(..) | key::Kind::Shared(..)) {
